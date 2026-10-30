@@ -14,18 +14,26 @@ use zip::ZipArchive;
 use crate::mod_locator::{Mod, UpdateKey, UpdateKeys};
 
 #[cfg(feature = "nexus")]
-static NEXUS_AUTH: OnceCell<String> = OnceCell::const_new();
-static REQWEST: OnceCell<reqwest::Client> = OnceCell::const_new();
+static NEXUS_SESSION: OnceCell<String> = OnceCell::const_new();
+#[cfg(feature = "nexus")]
+static NEXUS_SEMAPHORE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+static REQWEST: OnceCell<wreq::Client> = OnceCell::const_new();
 
-async fn reqwest_client() -> &'static reqwest::Client {
-    REQWEST.get_or_init(|| async { reqwest::Client::new() }).await
+async fn reqwest_client() -> &'static wreq::Client {
+    REQWEST.get_or_init(|| async {
+        // Emulate Chrome TLS/HTTP2 fingerprint so Cloudflare doesn't block us
+        wreq::Client::builder()
+            .emulation(wreq_util::emulate::Emulation::Chrome136)
+            .build()
+            .expect("failed to build wreq client")
+    }).await
 }
 
 pub async fn update(mods: &Vec<Mod>, mods_dir: &PathBuf, force: bool) -> Result<()> {
     let mut updated = 0;
     let mut failed = 0;
     let mut skipped = 0;
-    let mut set: JoinSet<Result<(Mod, UpdateResult)>> = JoinSet::new();
+    let mut set: JoinSet<(Mod, UpdateResult)> = JoinSet::new();
     for mod_ in mods {
         let name = mod_.manifest.name.clone().unwrap_or(mod_.path.strip_prefix(mods_dir)?.display().to_string());
         if let Some(source) = mod_.manifest.update_keys.preferred() {
@@ -34,9 +42,10 @@ pub async fn update(mods: &Vec<Mod>, mods_dir: &PathBuf, force: bool) -> Result<
                 eprintln!("{name}: Subkeys are not yet supported");
                 continue;
             }
+            let (m, source) = (mod_.clone(), source.clone());
             match &*source.source.to_lowercase() {
-                #[cfg(feature = "github")] "github" => {set.spawn(github(mod_.clone(), source.clone(), force));}
-                #[cfg(feature = "nexus")] "nexus" => {set.spawn(nexus(mod_.clone(), source.clone(), force));}
+                #[cfg(feature = "github")] "github" => {set.spawn(async move { github(m.clone(), source, force).await.unwrap_or_else(|e| (m, UpdateResult::Failure(e.to_string()))) });}
+                #[cfg(feature = "nexus")] "nexus" => {set.spawn(async move { nexus(m.clone(), source, force).await.unwrap_or_else(|e| (m, UpdateResult::Failure(e.to_string()))) });}
                 _ => unreachable!()
             }
         } else {
@@ -45,7 +54,7 @@ pub async fn update(mods: &Vec<Mod>, mods_dir: &PathBuf, force: bool) -> Result<
         }
     }
     while let Some(res) = set.join_next().await {
-        let (mod_, result) = res??;
+        let (mod_, result) = res?;
         let name = mod_.manifest.name.unwrap_or(mod_.path.strip_prefix(mods_dir)?.display().to_string());
         match result {
             UpdateResult::Success { new_version } => {
@@ -131,7 +140,7 @@ async fn github(mod_: Mod, update_key: UpdateKey, force: bool) -> Result<(Mod, U
         return Ok((mod_, UpdateResult::Failure(format!("Multiple valid assets found: {assets:?}"))));
     }
     let asset = reqwest_client().await
-        .get(assets[0].browser_download_url.clone())
+        .get(assets[0].browser_download_url.as_str())
         .send().await?
         .error_for_status()?
         .bytes().await?;
@@ -144,52 +153,95 @@ async fn nexus(mod_: Mod, update_key: UpdateKey, force: bool) -> Result<(Mod, Up
     if !force && !check_for_updates(&mod_).await? {
         return Ok((mod_, UpdateResult::AlreadyUpToDate));
     }
-    let file_id;
-    {
-        let document = Html::parse_document(&reqwest_client().await
-            .get(format!("https://nexusmods.com/stardewvalley/mods/{}?tab=files", update_key.id))
-            .send().await?
-            .error_for_status()?
-            .text().await?
-        );
-        file_id = document.select(&Selector::parse("#file-container-main-files .file-expander-header").unwrap())
-            .next()
-            .or(document.select(&Selector::parse("#file-container-update-files .file-expander-header").unwrap())
-                .next())
-            .ok_or(anyhow!("HTML parsing failed: couldn't locate main file element"))?
-            .attr("data-id").ok_or(anyhow!("HTML parsing failed: couldn't find data-id attribute"))?
-            .to_string();
-    }
-    let auth = NEXUS_AUTH.get_or_try_init(|| async {
+    // nexusmods_session: NEXUS_COOKIE env var (bare value or full cookie string) or browser via rookie
+    let session = NEXUS_SESSION.get_or_try_init(|| async {
+        if let Ok(val) = std::env::var("NEXUS_COOKIE") {
+            return Ok(val.split(';')
+                .find_map(|p| p.trim().strip_prefix("nexusmods_session=").map(str::to_string))
+                .unwrap_or(val));
+        }
         Result::<_, anyhow::Error>::Ok(
-            rookie::load(Some(vec! ["nexusmods.com"])).unwrap().iter()
-                .find(|cookie| cookie.name == "nexusmods_session")
-                .ok_or(anyhow!("Could not find Nexus cookie. Please sign in to Nexus in any web browser and try again."))?
+            rookie::load(Some(vec!["nexusmods.com"])).map_err(|e| anyhow!("{e}"))?.iter()
+                .find(|c| c.name == "nexusmods_session")
+                .ok_or(anyhow!("No nexusmods_session found. Set NEXUS_COOKIE=<value> in .env or sign in to Nexus in your browser."))?
                 .value.clone()
         )
     }).await?;
-    let url = reqwest_client().await
+    // Limit concurrency to avoid Nexus rate-limiting
+    let _permit = NEXUS_SEMAPHORE.acquire().await?;
+    // wreq emulates Chrome TLS/HTTP2 fingerprint — Cloudflare accepts without cf_clearance
+    let client = reqwest_client().await;
+    let cookie = format!("nexusmods_session={session}");
+    let files_url = format!("https://www.nexusmods.com/stardewvalley/mods/{}?tab=files", update_key.id);
+    let file_id = {
+        let html = client.get(&files_url)
+            .header("Cookie", &cookie)
+            .header("Referer", "https://www.nexusmods.com/stardewvalley/mods/")
+            .send().await?.error_for_status()?.text().await?;
+        let document = Html::parse_document(&html);
+        document.select(&Selector::parse("#file-container-main-files .file-expander-header").unwrap())
+            .next()
+            .or_else(|| document.select(&Selector::parse("#file-container-update-files .file-expander-header").unwrap()).next())
+            .ok_or(anyhow!("HTML parsing failed: couldn't locate main file element"))?
+            .attr("data-id").ok_or(anyhow!("HTML parsing failed: couldn't find data-id attribute"))?
+            .to_string()
+    };
+    let dl_resp = client
         .post("https://www.nexusmods.com/Core/Libs/Common/Managers/Downloads?GenerateDownloadUrl")
-        .form(&json!(
-            {
-                "fid": file_id,
-                "game_id": 1303,
-            }
-        ))
-        .header("Cookie", format!("nexusmods_session={auth}"))
+        .form(&json!({"fid": file_id, "game_id": 1303, "collection_id": 0}))
+        .header("Cookie", &cookie)
+        .header("Referer", &files_url)
+        .header("X-Requested-With", "XMLHttpRequest")
+        .header("Origin", "https://www.nexusmods.com")
         .send().await?
         .error_for_status()?
-        .json::<serde_json::Value>().await?
-        .get("url").ok_or(anyhow!("Invalid response from Nexus: Expected url"))?
-        .as_str().ok_or(anyhow!("Invalid response from Nexus: Expected string"))?
+        .json::<serde_json::Value>().await?;
+    let download_url = dl_resp
+        .get("url").ok_or_else(|| anyhow!("GenerateDownloadUrl unexpected response: {dl_resp}"))?
+        .as_str().ok_or(anyhow!("GenerateDownloadUrl: url is not a string"))?
         .to_string();
-    let file = reqwest_client().await
-        .get(url)
-        .send().await?
-        .error_for_status()?
-        .bytes().await?;
+    let file = client.get(&download_url).header("Cookie", &cookie).send().await?.error_for_status()?.bytes().await?;
     install(&mod_, file).await?;
     Ok((mod_, UpdateResult::Success {new_version: "latest".into()}))  // TODO: Determine actual new version
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mod_locator::locate_mods;
+    use tokio::fs;
+
+    /// Downloads Pony Weight Loss Program (11K) and AutomaticGates (33K) into $TMPDIR.
+    /// Run with: cargo test -- --ignored
+    /// Requires NEXUS_COOKIE env var (nexusmods_session value or full cookie string).
+    #[tokio::test]
+    #[ignore = "integration: hits real Nexus, requires NEXUS_COOKIE"]
+    async fn nexus_downloads_small_mods() {
+        assert!(std::env::var("NEXUS_COOKIE").is_ok(), "NEXUS_COOKIE not set");
+
+        let test_dir = std::env::temp_dir().join("prismatic-test");
+        if test_dir.exists() { fs::remove_dir_all(&test_dir).await.unwrap(); }
+        fs::create_dir_all(&test_dir).await.unwrap();
+
+        for (name, nexus_id) in [("Pony Weight Loss Program", "1232"), ("AutomaticGates", "3109")] {
+            let mod_dir = test_dir.join(name);
+            fs::create_dir(&mod_dir).await.unwrap();
+            // version 0.0.1 ensures SMAPI reports an update; force=true skips the check anyway
+            fs::write(mod_dir.join("manifest.json"), format!(
+                r#"{{"Name":"{name}","Author":"test","Version":"0.0.1","UniqueID":"test.{nexus_id}","UpdateKeys":["Nexus:{nexus_id}"]}}"#
+            )).await.unwrap();
+        }
+
+        let mods = locate_mods(&test_dir).await.expect("locate_mods failed");
+        assert_eq!(mods.len(), 2, "expected 2 mods in test dir");
+
+        update(&mods, &test_dir, true).await.expect("update returned Err");
+
+        let old_dir = test_dir.join(".old");
+        assert!(old_dir.is_dir(), ".old/ missing — no mods were installed");
+        let backed_up = old_dir.read_dir().unwrap().flatten().count();
+        assert_eq!(backed_up, 2, "expected both mods backed up in .old/, got {backed_up}");
+    }
 }
 
 async fn install(mod_: &Mod, archive: Bytes) -> Result<()> {

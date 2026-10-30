@@ -1,0 +1,12 @@
+[env]
+DYLD_LIBRARY_PATH="/Users/rodolphe.guillaume/.local/share/mise/installs/python/3.12/lib"
+MODS_LOCATION="/Users/rodolphe.guillaume/Library/Application Support/Steam/steamapps/common/Stardew Valley/Contents/MacOS/Mods"
+NEXUS_COOKIE="override in .env file"
+NEXUS_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+_.file = ".env"
+
+[tools]
+cmake = "latest"
+pnpm = "latest"
+python = "3.12"
+rust = "latest"

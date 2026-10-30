@@ -5,6 +5,7 @@ use async_recursion::async_recursion;
 use json_comments::StripComments;
 use serde::{Deserialize, Deserializer};
 use serde::de::Error;
+use std::io::Read;
 
 #[derive(Debug, Clone)]
 pub struct Mod {
@@ -62,6 +63,27 @@ impl<'de> Deserialize<'de> for UpdateKey {
     }
 }
 
+/// SMAPI accepts comments and trailing commas in manifests, serde_json accepts neither.
+fn parse_manifest(text: &str) -> anyhow::Result<Manifest> {
+    let mut stripped = String::new();
+    StripComments::new(text.trim_start_matches('\u{feff}').as_bytes()).read_to_string(&mut stripped)?;
+    let chars: Vec<char> = stripped.chars().collect();
+    let mut json = String::with_capacity(stripped.len());
+    let (mut in_string, mut escaped) = (false, false);
+    for (i, &c) in chars.iter().enumerate() {
+        if in_string {
+            in_string = escaped || c != '"';
+            escaped = !escaped && c == '\\';
+        } else if c == '"' {
+            in_string = true;
+        } else if c == ',' && matches!(chars[i + 1..].iter().find(|c| !c.is_whitespace()), Some('}' | ']')) {
+            continue
+        }
+        json.push(c);
+    }
+    Ok(serde_json::from_str(&json)?)
+}
+
 #[async_recursion]
 pub async fn locate_mods(dir: &Path) -> anyhow::Result<Vec<Mod>> {
     let mut mods = Vec::with_capacity(dir.read_dir()?.count());
@@ -73,11 +95,23 @@ pub async fn locate_mods(dir: &Path) -> anyhow::Result<Vec<Mod>> {
         if manifest.is_file() {
             mods.push(Mod {
                 path: subdir.path(),
-                manifest: serde_json::from_reader(StripComments::new(fs::read_to_string(manifest).await?.trim_start_matches('\u{feff}').as_bytes()))?,
+                manifest: parse_manifest(&fs::read_to_string(manifest).await?)?,
             });
         } else {
             mods.extend(locate_mods(&subdir.path()).await?);
         }
     }
     Ok(mods)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_manifest;
+
+    #[test]
+    fn tolerates_trailing_commas_and_comments() {
+        let m = parse_manifest("\u{feff}{\n  \"Name\": \"a,}\", // c\n  \"UpdateKeys\": [\"Nexus:1\",],\n}").unwrap();
+        assert_eq!(m.name.as_deref(), Some("a,}"));
+        assert_eq!(m.update_keys.len(), 1);
+    }
 }
