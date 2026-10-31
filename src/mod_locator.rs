@@ -44,6 +44,11 @@ impl Serialize for UpdateKey {
     }
 }
 
+/// Some manifests ship a placeholder like `Nexus:???` instead of a real id
+pub fn is_nexus_id(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
+}
+
 pub trait UpdateKeys {
     fn preferred(&self) -> Option<&UpdateKey>;
 }

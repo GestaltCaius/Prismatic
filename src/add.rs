@@ -3,14 +3,14 @@ use std::io::Cursor;
 use std::path::Path;
 use anyhow::{anyhow, bail, Result};
 use zip::ZipArchive;
-use crate::mod_locator::{locate_mods, Mod};
+use crate::mod_locator::{is_nexus_id, locate_mods, Mod};
 use crate::update::nexus_download;
 
 /// Extracts the mod id from a Stardew Valley Nexus URL.
 fn nexus_id(url: &str) -> Option<&str> {
     let id = url.split("nexusmods.com/stardewvalley/mods/").nth(1)?
         .split(['?', '#', '/']).next()?;
-    (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then_some(id)
+    is_nexus_id(id).then_some(id)
 }
 
 pub async fn add(mods: &[Mod], mods_dir: &Path, source: &str) -> Result<()> {
@@ -19,6 +19,9 @@ pub async fn add(mods: &[Mod], mods_dir: &Path, source: &str) -> Result<()> {
 }
 
 pub async fn add_nexus(mods: &[Mod], mods_dir: &Path, id: &str) -> Result<()> {
+    if !is_nexus_id(id) {
+        bail!("Invalid Nexus mod id: {id}");
+    }
     if let Some(installed) = mods.iter().find(|m| m.manifest.update_keys.iter().any(|k| k.source.eq_ignore_ascii_case("nexus") && k.id == id)) {
         bail!("Already installed: {}", installed.path.strip_prefix(mods_dir)?.display());
     }
