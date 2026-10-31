@@ -6,7 +6,7 @@ use anyhow::{anyhow, bail, Result};
 use inquire::MultiSelect;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
-use crate::mod_locator::{locate_mods, Mod, UpdateKey, UpdateKeys};
+use crate::mod_locator::{is_nexus_id, locate_mods, Mod, UpdateKey, UpdateKeys};
 
 pub const DEFAULT_FILE: &str = "prismatic-mods.json";
 const FORMAT: u32 = 1;
@@ -27,9 +27,16 @@ struct Entry {
     version: Option<String>,
 }
 
+impl Entry {
+    fn describe(&self) -> String {
+        format!("{} {} ({})", self.name.as_deref().unwrap_or("Unnamed mod"), self.version.as_deref().unwrap_or(""), self.key)
+    }
+}
+
+/// Truncated, for the picker only
 impl fmt::Display for Entry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = format!("{} {} ({})", self.name.as_deref().unwrap_or("Unnamed mod"), self.version.as_deref().unwrap_or(""), self.key);
+        let label = self.describe();
         match label.char_indices().nth(LABEL_WIDTH) {
             Some((end, _)) => write!(f, "{}...", &label[..end]),
             None => f.write_str(&label),
@@ -43,7 +50,9 @@ fn entries_from(mods: &[Mod]) -> (Vec<Entry>, Vec<String>) {
     let mut seen = HashSet::new();
     let (mut entries, mut unexportable) = (Vec::new(), Vec::new());
     for mod_ in mods {
-        match mod_.manifest.update_keys.preferred() {
+        let installable = mod_.manifest.update_keys.preferred()
+            .filter(|key| !key.source.eq_ignore_ascii_case("nexus") || is_nexus_id(&key.id));
+        match installable {
             Some(key) => if seen.insert(key.to_string().to_lowercase()) {
                 entries.push(Entry {
                     key: key.clone(),
@@ -78,7 +87,7 @@ pub async fn export(mods: &[Mod], file: &Path, all: bool) -> Result<()> {
     }
     let (entries, unexportable) = entries_from(mods);
     for name in &unexportable {
-        eprintln!("{name}: No update key, can't be exported");
+        eprintln!("{name}: No usable update key, can't be exported");
     }
     let entries = pick(entries, "Pick mods to export (space: toggle, right: all, left: none, enter: confirm)", all)?;
     if entries.is_empty() {
@@ -116,11 +125,11 @@ pub async fn import(mods: &[Mod], mods_dir: &Path, file: &Path, all: bool) -> Re
     for entry in entries {
         if is_installed(&mods, &entry.key) {
             skipped += 1;
-            eprintln!("{entry}: Already installed");
+            eprintln!("{}: Already installed", entry.describe());
             continue;
         }
         if entry.key.subkey.is_some() {
-            eprintln!("{entry}: Subkeys are not yet supported, installing the main file");
+            eprintln!("{}: Subkeys are not yet supported, installing the main file", entry.describe());
         }
         match install(&mods, mods_dir, &entry.key).await {
             Ok(()) => {
@@ -129,7 +138,7 @@ pub async fn import(mods: &[Mod], mods_dir: &Path, file: &Path, all: bool) -> Re
             }
             Err(e) => {
                 failed += 1;
-                eprintln!("{entry}: {e}");
+                eprintln!("{}: {e}", entry.describe());
             }
         }
     }
@@ -168,10 +177,11 @@ mod tests {
             mod_("A (variant)", vec![key("nexus", "1", None)]),
             mod_("B", vec![]),
             mod_("C", vec![key("Nexus", "2", None)]),
+            mod_("D", vec![key("Nexus", "???", None)]),
         ];
         let (entries, unexportable) = entries_from(&mods);
         assert_eq!(entries.iter().map(|e| e.name.as_deref().unwrap()).collect::<Vec<_>>(), ["A", "C"]);
-        assert_eq!(unexportable, ["B"]);
+        assert_eq!(unexportable, ["B", "D"]);
     }
 
     #[test]
