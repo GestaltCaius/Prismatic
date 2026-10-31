@@ -20,8 +20,31 @@ bytes = "1.6.0"
 async-recursion = "1.1.0"
 scraper = { version = "0.19.0", optional = true }
 rookie = { version = "0.5.1", optional = true }
+inquire = "=0.9.4"
 
 [features]
 default = ["github", "nexus"]
 github = ["dep:octocrab"]
 nexus = ["dep:scraper", "dep:rookie"]
+
+# Tuned for `cargo install --git`: smallest, fastest binary, at the cost of build time.
+# `cargo build` (dev profile) is unaffected.
+[profile.release]
+opt-level = 3     # default for release; stated explicitly so it is not silently changed
+lto = "fat"       # optimise across crate boundaries, slowest to link
+codegen-units = 1 # let LLVM see the whole crate
+strip = "symbols" # drop debug symbols from the shipped binary
+
+# rustc warnings are denied through .cargo/config.toml (`-D warnings`) rather than here,
+# so a newer compiler adding a warning cannot break `cargo install --git` for users.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "warn"
+dbg_macro = "deny"
+panic = "warn"

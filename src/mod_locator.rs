@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::anyhow;
 use async_recursion::async_recursion;
 use json_comments::StripComments;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::Error;
 use std::io::Read;
 
@@ -32,6 +32,18 @@ pub struct UpdateKey {
     pub subkey: Option<String>,
 }
 
+impl std::fmt::Display for UpdateKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}{}", self.source, self.id, self.subkey.as_deref().unwrap_or_default())
+    }
+}
+
+impl Serialize for UpdateKey {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> where S: Serializer {
+        serializer.collect_str(self)
+    }
+}
+
 pub trait UpdateKeys {
     fn preferred(&self) -> Option<&UpdateKey>;
 }
@@ -46,7 +58,7 @@ impl UpdateKeys for [UpdateKey] {
 impl<'de> Deserialize<'de> for UpdateKey {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error> where D: Deserializer<'de> {
         let value = String::deserialize(deserializer)?;
-        let (source, key) = value.split_once(':').ok_or(Error::custom("UpdateKey must contain ':'"))?;
+        let (source, key) = value.split_once(':').ok_or_else(|| Error::custom("UpdateKey must contain ':'"))?;
         if let Some((id, subkey)) = key.split_once('@') {
             Ok(Self {
                 source: source.into(),
@@ -63,7 +75,7 @@ impl<'de> Deserialize<'de> for UpdateKey {
     }
 }
 
-/// SMAPI accepts comments and trailing commas in manifests, serde_json accepts neither.
+/// SMAPI accepts comments and trailing commas in manifests, `serde_json` accepts neither.
 fn parse_manifest(text: &str) -> anyhow::Result<Manifest> {
     let mut stripped = String::new();
     StripComments::new(text.trim_start_matches('\u{feff}').as_bytes()).read_to_string(&mut stripped)?;
@@ -88,7 +100,7 @@ fn parse_manifest(text: &str) -> anyhow::Result<Manifest> {
 pub async fn locate_mods(dir: &Path) -> anyhow::Result<Vec<Mod>> {
     let mut mods = Vec::with_capacity(dir.read_dir()?.count());
     for subdir in dir.read_dir()?.flatten() {
-        if !subdir.file_type()?.is_dir() || subdir.file_name().to_str().ok_or(anyhow!("Invalid directory name"))?.starts_with('.') {
+        if !subdir.file_type()?.is_dir() || subdir.file_name().to_str().ok_or_else(|| anyhow!("Invalid directory name"))?.starts_with('.') {
             continue
         }
         let manifest = subdir.path().join("manifest.json");

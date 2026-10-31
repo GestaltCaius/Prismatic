@@ -19,13 +19,12 @@ static NEXUS_SESSION: OnceCell<String> = OnceCell::const_new();
 static NEXUS_SEMAPHORE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 static REQWEST: OnceCell<wreq::Client> = OnceCell::const_new();
 
-async fn reqwest_client() -> &'static wreq::Client {
-    REQWEST.get_or_init(|| async {
+async fn reqwest_client() -> Result<&'static wreq::Client> {
+    REQWEST.get_or_try_init(|| async {
         // Emulate Chrome TLS/HTTP2 fingerprint so Cloudflare doesn't block us
-        wreq::Client::builder()
+        Result::<_, anyhow::Error>::Ok(wreq::Client::builder()
             .emulation(wreq_util::emulate::Emulation::Chrome136)
-            .build()
-            .expect("failed to build wreq client")
+            .build()?)
     }).await
 }
 
@@ -54,12 +53,12 @@ pub async fn update(mods: &Vec<Mod>, mods_dir: &PathBuf, force: bool) -> Result<
         }
     }
     while let Some(res) = set.join_next().await {
-        let (mod_, result) = res?;
-        let name = mod_.manifest.name.unwrap_or(mod_.path.strip_prefix(mods_dir)?.display().to_string());
+        let (finished, result) = res?;
+        let name = finished.manifest.name.unwrap_or(finished.path.strip_prefix(mods_dir)?.display().to_string());
         match result {
             UpdateResult::Success { new_version } => {
                 updated += 1;
-                if let Some(old_version) = mod_.manifest.version {
+                if let Some(old_version) = finished.manifest.version {
                     println!("{name}: {old_version} -> {new_version}");
                 } else {
                     println!("{name}: {new_version}");
@@ -93,13 +92,13 @@ enum UpdateResult {
 
 async fn check_for_updates(mod_: &Mod) -> Result<bool> {
     let Some(key) = mod_.manifest.update_keys.preferred() else {bail!("No preferred update key")};
-    Ok(reqwest_client().await
+    Ok(reqwest_client().await?
         .post("https://smapi.io/api/v3.0/mods")
         .json(&json!(
             {
                 "mods": [
                     {
-                        "id": mod_.manifest.unique_id.clone().unwrap_or(format!("FAKE.{}.{}", key.source, key.id)),
+                        "id": mod_.manifest.unique_id.clone().unwrap_or_else(|| format!("FAKE.{}.{}", key.source, key.id)),
                         "updateKeys": [ format!("{}:{}", key.source, key.id) ],
                         "installedVersion": mod_.manifest.version.clone().unwrap_or_default(),
                     },
@@ -110,8 +109,8 @@ async fn check_for_updates(mod_: &Mod) -> Result<bool> {
         .send().await?
         .error_for_status()?
         .json::<serde_json::Value>().await?
-        .as_array().ok_or(anyhow!("Expected array"))?[0]
-        .as_object().ok_or(anyhow!("Expected object"))?
+        .as_array().ok_or_else(|| anyhow!("Expected array"))?[0]
+        .as_object().ok_or_else(|| anyhow!("Expected object"))?
         .contains_key("suggestedUpdate")
     )
 }
@@ -121,7 +120,7 @@ async fn github(mod_: Mod, update_key: UpdateKey, force: bool) -> Result<(Mod, U
     if !force && !check_for_updates(&mod_).await? {
         return Ok((mod_, UpdateResult::AlreadyUpToDate));
     }
-    let (owner, repo) = update_key.id.split_once('/').ok_or(anyhow!("Invalid GitHub repo"))?;
+    let (owner, repo) = update_key.id.split_once('/').ok_or_else(|| anyhow!("Invalid GitHub repo"))?;
     let release = octocrab::instance()
         .repos(owner, repo)
         .releases()
@@ -139,7 +138,7 @@ async fn github(mod_: Mod, update_key: UpdateKey, force: bool) -> Result<(Mod, U
     if assets.len() > 1 {
         return Ok((mod_, UpdateResult::Failure(format!("Multiple valid assets found: {assets:?}"))));
     }
-    let asset = reqwest_client().await
+    let asset = reqwest_client().await?
         .get(assets[0].browser_download_url.as_str())
         .send().await?
         .error_for_status()?
@@ -153,6 +152,14 @@ async fn nexus(mod_: Mod, update_key: UpdateKey, force: bool) -> Result<(Mod, Up
     if !force && !check_for_updates(&mod_).await? {
         return Ok((mod_, UpdateResult::AlreadyUpToDate));
     }
+    let file = nexus_download(&update_key.id).await?;
+    install(&mod_, file).await?;
+    Ok((mod_, UpdateResult::Success {new_version: "latest".into()}))  // TODO: Determine actual new version
+}
+
+/// Downloads the main file of a Stardew Valley Nexus mod.
+#[cfg(feature = "nexus")]
+pub async fn nexus_download(mod_id: &str) -> Result<Bytes> {
     // nexusmods_session: NEXUS_COOKIE env var (bare value or full cookie string) or browser via rookie
     let session = NEXUS_SESSION.get_or_try_init(|| async {
         if let Ok(val) = std::env::var("NEXUS_COOKIE") {
@@ -161,29 +168,31 @@ async fn nexus(mod_: Mod, update_key: UpdateKey, force: bool) -> Result<(Mod, Up
                 .unwrap_or(val));
         }
         Result::<_, anyhow::Error>::Ok(
-            rookie::load(Some(vec!["nexusmods.com"])).map_err(|e| anyhow!("{e}"))?.iter()
+            rookie::load(Some(vec!["nexusmods.com".to_string()])).map_err(|e| anyhow!("{e}"))?.iter()
                 .find(|c| c.name == "nexusmods_session")
-                .ok_or(anyhow!("No nexusmods_session found. Set NEXUS_COOKIE=<value> in .env or sign in to Nexus in your browser."))?
+                .ok_or_else(|| anyhow!("No nexusmods_session found. Set the NEXUS_COOKIE environment variable or sign in to Nexus in your browser."))?
                 .value.clone()
         )
     }).await?;
     // Limit concurrency to avoid Nexus rate-limiting
     let _permit = NEXUS_SEMAPHORE.acquire().await?;
     // wreq emulates Chrome TLS/HTTP2 fingerprint — Cloudflare accepts without cf_clearance
-    let client = reqwest_client().await;
+    let client = reqwest_client().await?;
     let cookie = format!("nexusmods_session={session}");
-    let files_url = format!("https://www.nexusmods.com/stardewvalley/mods/{}?tab=files", update_key.id);
+    let files_url = format!("https://www.nexusmods.com/stardewvalley/mods/{mod_id}?tab=files");
     let file_id = {
         let html = client.get(&files_url)
             .header("Cookie", &cookie)
             .header("Referer", "https://www.nexusmods.com/stardewvalley/mods/")
             .send().await?.error_for_status()?.text().await?;
         let document = Html::parse_document(&html);
-        document.select(&Selector::parse("#file-container-main-files .file-expander-header").unwrap())
+        let main_files = Selector::parse("#file-container-main-files .file-expander-header").map_err(|e| anyhow!("{e}"))?;
+        let update_files = Selector::parse("#file-container-update-files .file-expander-header").map_err(|e| anyhow!("{e}"))?;
+        document.select(&main_files)
             .next()
-            .or_else(|| document.select(&Selector::parse("#file-container-update-files .file-expander-header").unwrap()).next())
-            .ok_or(anyhow!("HTML parsing failed: couldn't locate main file element"))?
-            .attr("data-id").ok_or(anyhow!("HTML parsing failed: couldn't find data-id attribute"))?
+            .or_else(|| document.select(&update_files).next())
+            .ok_or_else(|| anyhow!("HTML parsing failed: couldn't locate main file element"))?
+            .attr("data-id").ok_or_else(|| anyhow!("HTML parsing failed: couldn't find data-id attribute"))?
             .to_string()
     };
     let dl_resp = client
@@ -198,11 +207,64 @@ async fn nexus(mod_: Mod, update_key: UpdateKey, force: bool) -> Result<(Mod, Up
         .json::<serde_json::Value>().await?;
     let download_url = dl_resp
         .get("url").ok_or_else(|| anyhow!("GenerateDownloadUrl unexpected response: {dl_resp}"))?
-        .as_str().ok_or(anyhow!("GenerateDownloadUrl: url is not a string"))?
+        .as_str().ok_or_else(|| anyhow!("GenerateDownloadUrl: url is not a string"))?
         .to_string();
-    let file = client.get(&download_url).header("Cookie", &cookie).send().await?.error_for_status()?.bytes().await?;
-    install(&mod_, file).await?;
-    Ok((mod_, UpdateResult::Success {new_version: "latest".into()}))  // TODO: Determine actual new version
+    Ok(client.get(&download_url).header("Cookie", &cookie).send().await?.error_for_status()?.bytes().await?)
+}
+
+async fn install(mod_: &Mod, archive: Bytes) -> Result<()> {
+    let old_dir = mod_.path.join("../.old/");
+    if !old_dir.is_dir() {
+        fs::create_dir(&old_dir).await?;
+    }
+    let old_dir = old_dir.canonicalize()?;
+    let dir_name = mod_.path.file_name().ok_or_else(|| anyhow!("Mod path has no directory name"))?;
+    let old_subdir = old_dir.join(format!("{} - {}", dir_name.to_string_lossy(), mod_.manifest.version.clone().unwrap_or_else(|| "unknown".into())));
+    if old_subdir.is_dir() {
+        bail!("File exists: {}", old_subdir.display());
+    }
+    let mut zip = ZipArchive::new(Cursor::new(archive))?;
+    if zip.is_empty() {
+        bail!("Zip archive is empty");
+    }
+    let base: HashSet<_> = zip.file_names().filter_map(|name| Some(name.split_once('/')?.0)).collect();
+    let mut base = base.into_iter();
+    let (Some(base), None) = (base.next(), base.next()) else {
+        bail!("Zip archive must contain exactly one item in the root");
+    };
+    let new_dir = mod_.path.with_file_name(base);
+    fs::rename(&mod_.path, &old_subdir).await?;
+    if new_dir.exists() {
+        bail!("File exists: {}", base);
+    }
+    zip.extract(mod_.path.parent().ok_or_else(|| anyhow!("Mod path has no parent directory"))?)?;
+    for file in old_subdir
+        .read_dir()?
+        .flatten()
+        .filter(|file| ["config.json", "config"].contains(&&*file.file_name().to_string_lossy()))
+    {
+        let new_path = new_dir.join(file.path().strip_prefix(&old_subdir)?);
+        if new_path.exists() {
+            fs::rename(&new_path, new_path.with_file_name(format!("{}.new", file.file_name().to_string_lossy()))).await?;
+        }
+        copy(&file.path(), &new_path).await?;
+    }
+    Ok(())
+}
+
+#[async_recursion]
+async fn copy(from: &PathBuf, to: &PathBuf) -> Result<()> {
+    if from.is_file() {
+        fs::copy(from, to).await?;
+    } else if from.is_dir() {
+        fs::create_dir(&to).await?;
+        for file in from.read_dir()?.flatten() {
+            copy(&file.path(), &to.join(file.file_name())).await?;
+        }
+    } else {
+        bail!("{} is neither a file nor a directory", from.display());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -211,9 +273,9 @@ mod tests {
     use crate::mod_locator::locate_mods;
     use tokio::fs;
 
-    /// Downloads Pony Weight Loss Program (11K) and AutomaticGates (33K) into $TMPDIR.
+    /// Downloads Pony Weight Loss Program (11K) and `AutomaticGates` (33K) into `$TMPDIR`.
     /// Run with: cargo test -- --ignored
-    /// Requires NEXUS_COOKIE env var (nexusmods_session value or full cookie string).
+    /// Requires `NEXUS_COOKIE` env var (`nexusmods_session` value or full cookie string).
     #[tokio::test]
     #[ignore = "integration: hits real Nexus, requires NEXUS_COOKIE"]
     async fn nexus_downloads_small_mods() {
@@ -242,58 +304,4 @@ mod tests {
         let backed_up = old_dir.read_dir().unwrap().flatten().count();
         assert_eq!(backed_up, 2, "expected both mods backed up in .old/, got {backed_up}");
     }
-}
-
-async fn install(mod_: &Mod, archive: Bytes) -> Result<()> {
-    let old_dir = mod_.path.join("../.old/");
-    if !old_dir.is_dir() {
-        fs::create_dir(&old_dir).await?;
-    }
-    let old_dir = old_dir.canonicalize()?;
-    let old_subdir = old_dir.join(format!("{} - {}", mod_.path.file_name().unwrap().to_string_lossy(), mod_.manifest.version.clone().unwrap_or("unknown".into())));
-    if old_subdir.is_dir() {
-        bail!("File exists: {}", old_subdir.display());
-    }
-    let mut zip = ZipArchive::new(Cursor::new(archive))?;
-    if zip.is_empty() {
-        bail!("Zip archive is empty");
-    }
-    let base: HashSet<_> = zip.file_names().filter_map(|name| Some(name.split_once('/')?.0)).collect();
-    if base.len() != 1 {
-        bail!("Zip archive must contain exactly one item in the root");
-    }
-    let base = base.iter().next().unwrap();
-    let new_dir = mod_.path.with_file_name(base);
-    fs::rename(&mod_.path, &old_subdir).await?;
-    if new_dir.exists() {
-        bail!("File exists: {}", base);
-    }
-    zip.extract(mod_.path.parent().unwrap())?;
-    for file in old_subdir
-        .read_dir()?
-        .flatten()
-        .filter(|file| ["config.json", "config"].contains(&&*file.file_name().to_string_lossy()))
-    {
-        let new_path = new_dir.join(file.path().strip_prefix(&old_subdir)?);
-        if new_path.exists() {
-            fs::rename(&new_path, new_path.with_file_name(format!("{}.new", file.file_name().to_string_lossy()))).await?;
-        }
-        copy(&file.path(), &new_path).await?;
-    }
-    Ok(())
-}
-
-#[async_recursion]
-async fn copy(from: &PathBuf, to: &PathBuf) -> Result<()> {
-    if from.is_file() {
-        fs::copy(from, to).await?;
-    } else if from.is_dir() {
-        fs::create_dir(&to).await?;
-        for file in from.read_dir()?.flatten() {
-            copy(&file.path(), &to.join(file.file_name())).await?;
-        }
-    } else {
-        bail!("{} is neither a file nor a directory", from.display());
-    }
-    Ok(())
 }
