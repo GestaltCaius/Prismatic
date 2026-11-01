@@ -2,8 +2,10 @@ use std::collections::HashSet;
 use std::io::Cursor;
 use std::path::Path;
 use anyhow::{anyhow, bail, Result};
+use indicatif::MultiProgress;
 use zip::ZipArchive;
 use crate::mod_locator::{is_nexus_id, locate_mods, Mod};
+use crate::progress::{self, Event, Progress};
 use crate::update::nexus_download;
 
 /// Extracts the mod id from a Stardew Valley Nexus URL.
@@ -15,17 +17,20 @@ fn nexus_id(url: &str) -> Option<&str> {
 
 pub async fn add(mods: &[Mod], mods_dir: &Path, source: &str) -> Result<()> {
     let id = nexus_id(source).ok_or_else(|| anyhow!("Expected a URL like https://www.nexusmods.com/stardewvalley/mods/<id>"))?;
-    add_nexus(mods, mods_dir, id).await
+    let progress = progress::bar(&MultiProgress::new(), &format!("Nexus:{id}"));
+    let result = add_nexus(mods, mods_dir, id, &progress).await;
+    progress.emit(Event::Done);
+    result
 }
 
-pub async fn add_nexus(mods: &[Mod], mods_dir: &Path, id: &str) -> Result<()> {
+pub async fn add_nexus(mods: &[Mod], mods_dir: &Path, id: &str, progress: &Progress) -> Result<()> {
     if !is_nexus_id(id) {
         bail!("Invalid Nexus mod id: {id}");
     }
     if let Some(installed) = mods.iter().find(|m| m.manifest.update_keys.iter().any(|k| k.source.eq_ignore_ascii_case("nexus") && k.id == id)) {
         bail!("Already installed: {}", installed.path.strip_prefix(mods_dir)?.display());
     }
-    let mut zip = ZipArchive::new(Cursor::new(nexus_download(id).await?))?;
+    let mut zip = ZipArchive::new(Cursor::new(nexus_download(id, progress).await?))?;
     let roots: HashSet<String> = zip.file_names().filter_map(|name| Some(name.split_once('/')?.0.to_string())).collect();
     if roots.is_empty() {
         bail!("Zip archive has no top-level folder");
@@ -33,7 +38,9 @@ pub async fn add_nexus(mods: &[Mod], mods_dir: &Path, id: &str) -> Result<()> {
     if let Some(root) = roots.iter().find(|root| mods_dir.join(root).exists()) {
         bail!("File exists: {root}");
     }
+    progress.emit(Event::Stage("Extracting"));
     zip.extract(mods_dir)?;
+    progress.emit(Event::Done);
 
     // One archive can hold several mods (packs) or alternate variants, all are installed
     let new_mods: Vec<_> = locate_mods(mods_dir).await?.into_iter()
