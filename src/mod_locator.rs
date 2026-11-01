@@ -20,6 +20,8 @@ pub struct Manifest {
     pub author: Option<String>,
     pub version: Option<String>,
     pub description: Option<String>,
+    /// PascalCase would give `UniqueId`, manifests write `UniqueID`
+    #[serde(rename = "UniqueID", alias = "UniqueId")]
     pub unique_id: Option<String>,
     #[serde(default)]
     pub update_keys: Vec<UpdateKey>,
@@ -124,6 +126,12 @@ pub async fn locate_mods(dir: &Path) -> anyhow::Result<Vec<Mod>> {
 #[cfg(test)]
 mod tests {
     use super::parse_manifest;
+
+    #[test]
+    fn reads_unique_id() {
+        let m = parse_manifest(r#"{"Name": "a", "UniqueID": "Author.Mod"}"#).unwrap();
+        assert_eq!(m.unique_id.as_deref(), Some("Author.Mod"));
+    }
 
     #[test]
     fn tolerates_trailing_commas_and_comments() {
