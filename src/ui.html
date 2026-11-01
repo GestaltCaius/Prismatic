@@ -53,6 +53,10 @@
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
   th { font-size: 0.85em; color: var(--muted); font-weight: 600; }
   td.key { font-family: var(--font-mono); font-size: 0.85em; color: var(--muted); }
+  td.key a { color: inherit; }
+  #mods tr, #importRows tr { cursor: pointer; }
+  #mods tr:hover td:first-child, #importRows tr:hover td:first-child { box-shadow: inset 4px 0 0 var(--border); }
+  #mods tr.selected td:first-child { box-shadow: inset 4px 0 0 var(--accent); }
   .badge { font-size: 0.8em; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); }
   .badge.update { color: var(--warn); border-color: var(--warn); }
   .badge.installed, .badge.done { color: var(--ok); border-color: var(--ok); }
@@ -197,6 +201,23 @@ function visibleMods() {
   return state.mods.filter((m) => !q || m.name.toLowerCase().includes(q) || (m.author || '').toLowerCase().includes(q));
 }
 
+/** Nexus and GitHub update keys link to their page, anything else stays text */
+function sourceLink(key) {
+  const [, nexusId] = /^Nexus:(\d+)(?:@.*)?$/.exec(key) || [];
+  const [, repo] = /^GitHub:([\w.-]+\/[\w.-]+)(?:@.*)?$/.exec(key) || [];
+  const href = nexusId ? 'https://www.nexusmods.com/stardewvalley/mods/' + nexusId : repo ? 'https://github.com/' + repo : null;
+  return href ? el('a', { href, target: '_blank', rel: 'noopener noreferrer' }, key) : key;
+}
+const sourceLinks = (keys) => keys.flatMap((key, i) => (i ? [', ', sourceLink(key)] : [sourceLink(key)]));
+
+/** Clicking anywhere on the row toggles its checkbox, except on links and controls or while selecting text */
+function toggleOnRowClick(row, box) {
+  row.addEventListener('click', (e) => {
+    if (box.disabled || e.target.closest('a, input, button') || window.getSelection().toString()) return;
+    box.click();
+  });
+}
+
 function renderMods() {
   const shown = visibleMods();
   const rows = shown.map((m) => {
@@ -204,16 +225,19 @@ function renderMods() {
     box.setAttribute('aria-label', 'Select ' + m.name);
     box.addEventListener('change', () => {
       if (box.checked) state.selected.add(m.path); else state.selected.delete(m.path);
+      row.classList.toggle('selected', box.checked);
       renderButtons();
     });
     const update = state.updates[m.path];
-    return el('tr', {},
+    const row = el('tr', { class: state.selected.has(m.path) ? 'selected' : '' },
       el('td', {}, box),
       el('td', { title: m.description || '' }, m.name, el('div', { class: 'muted' }, m.path)),
       el('td', {}, m.version || ''),
       el('td', {}, update ? el('span', { class: 'badge update' }, update) : (m.updatable ? '' : el('span', { class: 'muted' }, 'no source'))),
       el('td', {}, m.author || ''),
-      el('td', { class: 'key' }, m.keys.join(', ')));
+      el('td', { class: 'key' }, ...sourceLinks(m.keys)));
+    toggleOnRowClick(row, box);
+    return row;
   });
   $('mods').replaceChildren(...rows);
   $('selectAll').checked = shown.length > 0 && shown.every((m) => state.selected.has(m.path));
@@ -339,8 +363,10 @@ $('importFile').addEventListener('change', (e) => guarded(async () => {
     box.dataset.index = entry.index;
     box.setAttribute('aria-label', 'Install ' + entry.name);
     const label = { installed: 'already installed', installable: '', unsupported: 'not installable yet' }[entry.state];
-    return el('tr', {}, el('td', {}, box), el('td', {}, entry.name), el('td', {}, entry.version || ''),
-      el('td', { class: 'key' }, entry.key), el('td', {}, label ? el('span', { class: 'badge ' + entry.state }, label) : ''));
+    const row = el('tr', {}, el('td', {}, box), el('td', {}, entry.name), el('td', {}, entry.version || ''),
+      el('td', { class: 'key' }, ...sourceLinks([entry.key])), el('td', {}, label ? el('span', { class: 'badge ' + entry.state }, label) : ''));
+    toggleOnRowClick(row, box);
+    return row;
   }));
   $('importPreview').hidden = false;
 }));
