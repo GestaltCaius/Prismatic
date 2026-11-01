@@ -3,6 +3,7 @@ mod add;
 mod mod_list;
 mod mod_locator;
 mod list;
+mod smapi;
 mod update;
 
 use std::env::home_dir;

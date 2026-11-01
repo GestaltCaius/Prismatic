@@ -29,7 +29,10 @@ if Stardew Valley is installed to an atypical location you can specify it with `
 ### Backing up and sharing mod lists
 `export` and `import` ask which mods to include (space toggles, enter confirms, everything starts selected).
 Pass `--all` to skip the question, which is also what happens when there is no terminal.
-The file only holds each mod's update key (e.g. `Nexus:3109`), name and version, never any credentials.
+The file holds each mod's name, version, `UniqueID` and every update key its manifest declares (e.g. `Nexus:3109`,
+`GitHub:owner/repo`), never any credentials.
+Some manifests have no usable Nexus id (e.g. `Nexus:???`), for those export asks SMAPI's mod database (smapi.io) for it,
+which needs an internet connection. Files from older versions (format 1) can still be imported.
 To play co-op with the same mods, export on one machine and send the file to your friends, who run `prismatic import <file>`.
 
 Import always installs the latest version of each mod, so friends can end up on a newer version than the host.

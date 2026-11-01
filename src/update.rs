@@ -19,7 +19,7 @@ static NEXUS_SESSION: OnceCell<String> = OnceCell::const_new();
 static NEXUS_SEMAPHORE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 static REQWEST: OnceCell<wreq::Client> = OnceCell::const_new();
 
-async fn reqwest_client() -> Result<&'static wreq::Client> {
+pub async fn reqwest_client() -> Result<&'static wreq::Client> {
     REQWEST.get_or_try_init(|| async {
         // Emulate Chrome TLS/HTTP2 fingerprint so Cloudflare doesn't block us
         Result::<_, anyhow::Error>::Ok(wreq::Client::builder()
