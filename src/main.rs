@@ -5,6 +5,7 @@ mod mod_locator;
 mod list;
 mod progress;
 mod smapi;
+mod ui;
 mod update;
 
 use std::env::home_dir;
@@ -16,6 +17,7 @@ use crate::add::add;
 use crate::list::list;
 use crate::mod_list::{export, import, DEFAULT_FILE};
 use crate::mod_locator::locate_mods;
+use crate::ui::{run as run_ui, DEFAULT_PORT};
 use crate::update::update;
 
 #[derive(Debug, Parser)]
@@ -27,8 +29,9 @@ struct Args {
     /// and C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley\Mods on Windows
     #[clap(long, short = 'd')]
     mods_dir: Option<PathBuf>,
+    /// Opens the web interface when no command is given
     #[clap(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -63,6 +66,15 @@ enum Command {
         #[clap(long, short)]
         all: bool,
     },
+    /// Opens a web interface on this machine to manage mods from the browser
+    Ui {
+        /// Port to listen on (127.0.0.1 only), a free one is used if it is taken
+        #[clap(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
+        /// Don't open the browser, just print the address
+        #[clap(long)]
+        no_open: bool,
+    },
     /// Updates all installed mods if needed
     Update {
         /// Skip the update check and update all mods
@@ -92,13 +104,15 @@ async fn main_inner() -> Result<()> {
         bail!("Invalid mods directory");
     }
     let mods = locate_mods(&mods_dir).await?;
-    match args.command {
+    let command = args.command.unwrap_or(Command::Ui { port: DEFAULT_PORT, no_open: false });
+    match command {
         #[cfg(feature = "nexus")]
         Command::Add { source } => add(&mods, &mods_dir, &source).await?,
         #[cfg(not(feature = "nexus"))]
         Command::Add { .. } => bail!("Prismatic was compiled without Nexus support"),
         Command::Remove { .. } => bail!("Not yet implemented"),
         Command::List => list(&mods, &mods_dir)?,
+        Command::Ui { port, no_open } => run_ui(mods_dir, port, !no_open).await?,
         Command::Export { file, all } => export(&mods, &file, all).await?,
         Command::Import { file, all } => import(&mods, &mods_dir, &file, all).await?,
         Command::Update { force } => update(&mods, &mods_dir, force).await?,

@@ -9,7 +9,7 @@ use crate::progress::{self, Event, Progress};
 use crate::update::nexus_download;
 
 /// Extracts the mod id from a Stardew Valley Nexus URL.
-fn nexus_id(url: &str) -> Option<&str> {
+pub fn nexus_id(url: &str) -> Option<&str> {
     let id = url.split("nexusmods.com/stardewvalley/mods/").nth(1)?
         .split(['?', '#', '/']).next()?;
     is_nexus_id(id).then_some(id)
@@ -20,10 +20,10 @@ pub async fn add(mods: &[Mod], mods_dir: &Path, source: &str) -> Result<()> {
     let progress = progress::bar(&MultiProgress::new(), &format!("Nexus:{id}"));
     let result = add_nexus(mods, mods_dir, id, &progress).await;
     progress.emit(Event::Done);
-    result
+    result?.print(mods_dir)
 }
 
-pub async fn add_nexus(mods: &[Mod], mods_dir: &Path, id: &str, progress: &Progress) -> Result<()> {
+pub async fn add_nexus(mods: &[Mod], mods_dir: &Path, id: &str, progress: &Progress) -> Result<Added> {
     if !is_nexus_id(id) {
         bail!("Invalid Nexus mod id: {id}");
     }
@@ -46,20 +46,45 @@ pub async fn add_nexus(mods: &[Mod], mods_dir: &Path, id: &str, progress: &Progr
     let new_mods: Vec<_> = locate_mods(mods_dir).await?.into_iter()
         .filter(|m| roots.iter().any(|root| m.path.starts_with(mods_dir.join(root))))
         .collect();
+    let mut warnings = Vec::new();
     if new_mods.is_empty() {
-        eprintln!("Warning: extracted {roots:?} but found no manifest.json");
-    }
-    for m in &new_mods {
-        let path = m.path.strip_prefix(mods_dir)?.display();
-        println!("{} {} ({path})", m.manifest.name.as_deref().unwrap_or("Unnamed mod"), m.manifest.version.as_deref().unwrap_or(""));
+        warnings.push(format!("extracted {roots:?} but found no manifest.json"));
     }
     if new_mods.len() > 1 {
-        eprintln!("{} mods installed from one archive, delete the ones you don't want", new_mods.len());
+        warnings.push(format!("{} mods installed from one archive, delete the ones you don't want", new_mods.len()));
     }
-    if !new_mods.iter().any(|m| m.manifest.update_keys.iter().any(|k| k.source.eq_ignore_ascii_case("nexus") && k.id == id)) {
-        eprintln!("Warning: no Nexus:{id} update key in the manifest(s), `update` will not be able to update this mod");
+    if !new_mods.is_empty() && !new_mods.iter().any(|m| m.manifest.update_keys.iter().any(|k| k.source.eq_ignore_ascii_case("nexus") && k.id == id)) {
+        warnings.push(format!("no Nexus:{id} update key in the manifest(s), `update` will not be able to update this mod"));
     }
-    Ok(())
+    Ok(Added { mods: new_mods, warnings })
+}
+
+/// What an install put on disk
+pub struct Added {
+    pub mods: Vec<Mod>,
+    pub warnings: Vec<String>,
+}
+
+impl Added {
+    /// One line per installed mod: name, version and folder
+    pub fn lines(&self, mods_dir: &Path) -> Result<Vec<String>> {
+        self.mods.iter().map(|m| Ok(format!(
+            "{} {} ({})",
+            m.manifest.name.as_deref().unwrap_or("Unnamed mod"),
+            m.manifest.version.as_deref().unwrap_or(""),
+            m.path.strip_prefix(mods_dir)?.display(),
+        ))).collect()
+    }
+
+    pub fn print(&self, mods_dir: &Path) -> Result<()> {
+        for line in self.lines(mods_dir)? {
+            println!("{line}");
+        }
+        for warning in &self.warnings {
+            eprintln!("Warning: {warning}");
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -14,6 +14,10 @@ pub enum Event {
 pub struct Progress(Arc<dyn Fn(Event) + Send + Sync>);
 
 impl Progress {
+    pub fn new(report: impl Fn(Event) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(report))
+    }
+
     pub fn emit(&self, event: Event) {
         (self.0)(event);
     }

@@ -20,11 +20,22 @@ if Stardew Valley is installed to an atypical location you can specify it with `
 
 | Command | What it does |
 |---|---|
+| `prismatic` or `prismatic ui` | Opens the [web interface](#web-interface) |
 | `prismatic list` | Lists installed mods |
 | `prismatic add <nexus url>` | Installs a mod from a Nexus Mods page, e.g. `https://www.nexusmods.com/stardewvalley/mods/3109` |
 | `prismatic update` | Updates installed mods if needed (`--force` skips the check) |
 | `prismatic export [file]` | Writes your mod list to `prismatic-mods.json` (or `file`) |
 | `prismatic import <file>` | Installs the mods listed in a file made by `export` |
+
+### Web interface
+Running `prismatic` with no command (or double-clicking it on Windows) starts a small server on your own machine and opens
+it in your browser. It can list installed mods, check for and install updates, add a mod from a Nexus page, and export or
+import mod lists, with the same checks the commands use. Paste your Nexus cookie once in the page, it is kept in your browser.
+Add `-d <dir>` before `ui` for a non-default mods directory, `--port <n>` to change the port (47821 by default,
+a free one is used if it is taken) and `--no-open` to only print the address.
+
+The server only listens on `127.0.0.1`, and every request needs the random token that is part of the printed address,
+which stops other websites from using it to install mods on your machine. Stop it with Ctrl+C.
 
 ### Backing up and sharing mod lists
 `export` and `import` ask which mods to include (space toggles, enter confirms, everything starts selected).

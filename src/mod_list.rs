@@ -25,19 +25,19 @@ struct ModList {
 /// `name` and `version` are informational. `keys` holds every update key the mod declares,
 /// installable ones first, and import installs from the first one it supports.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Entry {
+pub struct Entry {
     #[serde(default)]
-    keys: Vec<UpdateKey>,
+    pub keys: Vec<UpdateKey>,
     /// Format 1 files had a single `key`, it is folded into `keys` when importing
     #[serde(default, skip_serializing)]
     key: Option<UpdateKey>,
-    name: Option<String>,
-    version: Option<String>,
-    unique_id: Option<String>,
+    pub name: Option<String>,
+    pub version: Option<String>,
+    pub unique_id: Option<String>,
 }
 
 impl Entry {
-    fn describe(&self) -> String {
+    pub fn describe(&self) -> String {
         let key = self.keys.first().map_or_else(|| "no key".to_string(), ToString::to_string);
         format!("{} {} ({key})", self.name.as_deref().unwrap_or("Unnamed mod"), self.version.as_deref().unwrap_or(""))
     }
@@ -59,7 +59,7 @@ fn is_source(key: &UpdateKey, source: &str) -> bool {
 }
 
 /// The only keys import can install from for now
-fn installable(keys: &[UpdateKey]) -> Option<&UpdateKey> {
+pub fn installable(keys: &[UpdateKey]) -> Option<&UpdateKey> {
     keys.iter().find(|key| is_source(key, "nexus") && is_nexus_id(&key.id))
 }
 
@@ -112,10 +112,9 @@ fn pick(entries: Vec<Entry>, prompt: &str, all: bool) -> Result<Vec<Entry>> {
     Ok(picked.into_iter().map(|option| option.value).collect())
 }
 
-pub async fn export(mods: &[Mod], file: &Path, all: bool) -> Result<()> {
-    if file.exists() {
-        bail!("File exists: {}", file.display());
-    }
+/// Entries for the installed mods, asking SMAPI for Nexus ids the manifests lack.
+/// Also returns the names of mods that have no usable key at all.
+pub async fn collect_entries(mods: &[Mod]) -> (Vec<Entry>, Vec<String>) {
     let unresolved: HashSet<&str> = mods.iter()
         .filter(|m| installable(&m.manifest.update_keys).is_none())
         .filter_map(|m| m.manifest.unique_id.as_deref())
@@ -127,44 +126,15 @@ pub async fn export(mods: &[Mod], file: &Path, all: bool) -> Result<()> {
             HashMap::new()
         }
     };
-    let (entries, unexportable) = entries_from(mods, &resolved);
-    for name in &unexportable {
-        eprintln!("{name}: No usable update key, can't be exported");
-    }
-    let entries = pick(entries, "Pick mods to export (space: toggle, right: all, left: none, enter: confirm)", all)?;
-    if entries.is_empty() {
-        bail!("No mods selected");
-    }
-    let count = entries.len();
-    fs::write(file, serde_json::to_string_pretty(&ModList { format: FORMAT, mods: entries })?).await?;
-    println!("Exported {count} mods to {}", file.display());
-    Ok(())
+    entries_from(mods, &resolved)
 }
 
-fn is_installed(mods: &[Mod], entry: &Entry) -> bool {
-    mods.iter().any(|m| {
-        let same_id = entry.unique_id.as_deref().zip(m.manifest.unique_id.as_deref())
-            .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b));
-        same_id || m.manifest.update_keys.iter().any(|k| entry.keys.iter().any(|e| is_source(e, &k.source) && e.id == k.id))
-    })
+pub fn list_json(entries: Vec<Entry>) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&ModList { format: FORMAT, mods: entries })?)
 }
 
-#[cfg_attr(not(feature = "nexus"), allow(unused_variables, clippy::unused_async))]
-async fn install(mods: &[Mod], mods_dir: &Path, entry: &Entry, progress: &Progress) -> Result<()> {
-    let Some(key) = installable(&entry.keys) else {
-        if entry.keys.iter().any(|key| is_source(key, "github")) {
-            bail!("GitHub installs are not yet implemented");
-        }
-        bail!("No supported source, keys: {}", entry.keys.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "));
-    };
-    #[cfg(feature = "nexus")]
-    { crate::add::add_nexus(mods, mods_dir, &key.id, progress).await }
-    #[cfg(not(feature = "nexus"))]
-    { bail!("Prismatic was compiled without Nexus support") }
-}
-
-pub async fn import(mods: &[Mod], mods_dir: &Path, file: &Path, all: bool) -> Result<()> {
-    let mut list: ModList = serde_json::from_str(&fs::read_to_string(file).await?)?;
+pub fn parse_list(text: &str) -> Result<Vec<Entry>> {
+    let mut list: ModList = serde_json::from_str(text)?;
     if !(1..=FORMAT).contains(&list.format) {
         bail!("Unsupported mod list format {}, expected {FORMAT}", list.format);
     }
@@ -173,7 +143,61 @@ pub async fn import(mods: &[Mod], mods_dir: &Path, file: &Path, all: bool) -> Re
             entry.keys.insert(0, key);
         }
     }
-    let entries = pick(list.mods, "Pick mods to install (space: toggle, right: all, left: none, enter: confirm)", all)?;
+    Ok(list.mods)
+}
+
+pub async fn export(mods: &[Mod], file: &Path, all: bool) -> Result<()> {
+    if file.exists() {
+        bail!("File exists: {}", file.display());
+    }
+    let (entries, unexportable) = collect_entries(mods).await;
+    for name in &unexportable {
+        eprintln!("{name}: No usable update key, can't be exported");
+    }
+    let entries = pick(entries, "Pick mods to export (space: toggle, right: all, left: none, enter: confirm)", all)?;
+    if entries.is_empty() {
+        bail!("No mods selected");
+    }
+    let count = entries.len();
+    fs::write(file, list_json(entries)?).await?;
+    println!("Exported {count} mods to {}", file.display());
+    Ok(())
+}
+
+pub fn is_installed(mods: &[Mod], entry: &Entry) -> bool {
+    mods.iter().any(|m| {
+        let same_id = entry.unique_id.as_deref().zip(m.manifest.unique_id.as_deref())
+            .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b));
+        same_id || m.manifest.update_keys.iter().any(|k| entry.keys.iter().any(|e| is_source(e, &k.source) && e.id == k.id))
+    })
+}
+
+/// What installing an entry put on disk
+pub struct Installed {
+    pub lines: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[cfg_attr(not(feature = "nexus"), allow(unused_variables, clippy::unused_async))]
+pub async fn install(mods: &[Mod], mods_dir: &Path, entry: &Entry, progress: &Progress) -> Result<Installed> {
+    let Some(key) = installable(&entry.keys) else {
+        if entry.keys.iter().any(|key| is_source(key, "github")) {
+            bail!("GitHub installs are not yet implemented");
+        }
+        bail!("No supported source, keys: {}", entry.keys.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "));
+    };
+    #[cfg(feature = "nexus")]
+    {
+        let added = crate::add::add_nexus(mods, mods_dir, &key.id, progress).await?;
+        Ok(Installed { lines: added.lines(mods_dir)?, warnings: added.warnings })
+    }
+    #[cfg(not(feature = "nexus"))]
+    { bail!("Prismatic was compiled without Nexus support") }
+}
+
+pub async fn import(mods: &[Mod], mods_dir: &Path, file: &Path, all: bool) -> Result<()> {
+    let list = parse_list(&fs::read_to_string(file).await?)?;
+    let entries = pick(list, "Pick mods to install (space: toggle, right: all, left: none, enter: confirm)", all)?;
     let mut mods = mods.to_vec();
     let multi = MultiProgress::new();
     let (mut installed, mut skipped, mut failed) = (0, 0, 0);
@@ -191,7 +215,13 @@ pub async fn import(mods: &[Mod], mods_dir: &Path, file: &Path, all: bool) -> Re
         let result = install(&mods, mods_dir, &entry, &progress).await;
         progress.emit(Event::Done);
         match result {
-            Ok(()) => {
+            Ok(done) => {
+                for line in &done.lines {
+                    println!("{line}");
+                }
+                for warning in &done.warnings {
+                    eprintln!("Warning: {warning}");
+                }
                 installed += 1;
                 mods = locate_mods(mods_dir).await?;
             }
