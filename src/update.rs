@@ -40,6 +40,14 @@ pub fn set_nexus_cookie(value: &str) {
     }
 }
 
+/// Drops the pasted cookie so the environment and the browser are used again
+#[cfg(feature = "nexus")]
+pub fn clear_nexus_cookie() {
+    if let Ok(mut cookie) = NEXUS_COOKIE_OVERRIDE.write() {
+        *cookie = None;
+    }
+}
+
 /// Where the Nexus cookie will come from, without touching the browser
 #[cfg(feature = "nexus")]
 pub fn nexus_cookie_source() -> Option<&'static str> {

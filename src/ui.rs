@@ -19,6 +19,9 @@ use crate::update::{update_mod, UpdateResult};
 
 pub const DEFAULT_PORT: u16 = 47821;
 const PAGE: &str = include_str!("ui.html");
+const LOGO: &[u8] = include_bytes!("assets/logo.png");
+const DUCK: &[u8] = include_bytes!("assets/duck.png");
+const DOG: &[u8] = include_bytes!("assets/dog.gif");
 const TOKEN_HEADER: &str = "x-prismatic-token";
 /// How many finished jobs the page keeps showing
 const JOBS_KEPT: usize = 20;
@@ -121,7 +124,9 @@ async fn guard(State(state): State<Shared>, request: Request, next: Next) -> Res
     } else {
         request.headers().get(TOKEN_HEADER).and_then(|token| token.to_str().ok())
     };
-    if !host_ok || !supplied.is_some_and(|token| constant_time_eq(token, &state.token)) {
+    // Images can't send the token header, and they hold nothing private
+    let public = request.uri().path().starts_with("/assets/");
+    if !host_ok || !(public || supplied.is_some_and(|token| constant_time_eq(token, &state.token))) {
         return (StatusCode::FORBIDDEN, "Forbidden").into_response();
     }
     next.run(request).await
@@ -134,7 +139,7 @@ async fn page() -> Response {
     headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(
-        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'",
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'",
     ));
     response
 }
@@ -181,6 +186,12 @@ async fn api_cookie(Json(request): Json<CookieRequest>) -> ApiResult<StatusCode>
     }
     #[cfg(not(feature = "nexus"))]
     { Err(bad_request("Prismatic was compiled without Nexus support")) }
+}
+
+async fn api_forget_cookie() -> StatusCode {
+    #[cfg(feature = "nexus")]
+    crate::update::clear_nexus_cookie();
+    StatusCode::NO_CONTENT
 }
 
 /// Mods whose path is in `paths`, or all of them when `paths` is `None`
@@ -425,11 +436,18 @@ async fn api_import(State(state): State<Shared>, Json(request): Json<ImportReque
     Ok(Json(job))
 }
 
+fn image(content_type: &'static str, bytes: &'static [u8]) -> Response {
+    ([(header::CONTENT_TYPE, content_type), (header::CACHE_CONTROL, "max-age=3600")], bytes).into_response()
+}
+
 fn router(state: Shared) -> Router {
     Router::new()
         .route("/", get(page))
+        .route("/assets/logo.png", get(|| async { image("image/png", LOGO) }))
+        .route("/assets/duck.png", get(|| async { image("image/png", DUCK) }))
+        .route("/assets/dog.gif", get(|| async { image("image/gif", DOG) }))
         .route("/api/state", get(api_state))
-        .route("/api/cookie", post(api_cookie))
+        .route("/api/cookie", post(api_cookie).delete(api_forget_cookie))
         .route("/api/check", post(api_check))
         .route("/api/update", post(api_update))
         .route("/api/add", post(api_add))
@@ -520,6 +538,78 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    fn color(name: &str) -> [f64; 3] {
+        let key = format!("--{name}: #");
+        let start = PAGE.find(&key).unwrap() + key.len();
+        let channel = |i: usize| f64::from(u8::from_str_radix(&PAGE[start + i..start + i + 2], 16).unwrap());
+        [channel(0), channel(2), channel(4)]
+    }
+
+    /// WCAG 2.x contrast ratio between two palette colors
+    fn contrast(a: &str, b: &str) -> f64 {
+        let luminance = |name: &str| {
+            let [r, g, b] = color(name).map(|c| {
+                let c = c / 255.0;
+                if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+            });
+            0.0722f64.mul_add(b, 0.7152f64.mul_add(g, 0.2126 * r))
+        };
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    fn failing<'a>(pairs: &[(&'a str, &'a str)], minimum: f64) -> Vec<String> {
+        pairs
+            .iter()
+            .map(|&(a, b)| (a, b, contrast(a, b)))
+            .filter(|&(_, _, ratio)| ratio < minimum)
+            .map(|(a, b, ratio)| format!("{a} on {b} is {ratio:.2}:1, needs {minimum}:1"))
+            .collect()
+    }
+
+    #[test]
+    fn text_colors_meet_wcag_aa() {
+        // Pairs mirror where each color is used: panels sit on `surface`, inputs and the error banner on `bg`
+        let pairs = [
+            ("text", "surface"), ("text", "bg"), ("muted", "surface"), ("muted", "bg"),
+            ("accent-contrast", "accent"), ("ok", "surface"), ("warn", "surface"),
+            ("danger", "surface"), ("danger", "bg"),
+        ];
+        let failures = failing(&pairs, 4.5);
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn control_boundaries_and_focus_ring_meet_wcag_non_text_contrast() {
+        let pairs = [("border", "surface"), ("accent", "surface"), ("text", "surface")];
+        let failures = failing(&pairs, 3.0);
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn contrast_math_matches_the_wcag_reference() {
+        assert!((contrast("text", "text") - 1.0).abs() < f64::EPSILON);
+        assert!(contrast("text", "surface") > contrast("muted", "surface"));
+    }
+
+    #[test]
+    fn page_has_the_accessibility_basics() {
+        assert!(PAGE.contains("<html lang=\"en\">"));
+        assert!(PAGE.contains("name=\"viewport\""));
+        assert!(PAGE.contains(":focus-visible"));
+        assert!(PAGE.contains("role=\"alert\""));
+        assert!(PAGE.contains("id=\"cookieStatus\" aria-live=\"polite\""));
+        assert!(!PAGE.contains("outline: none") && !PAGE.contains("outline: 0"));
+        for tag in PAGE.split("<img").skip(1) {
+            let tag = &tag[..tag.find('>').unwrap()];
+            assert!(tag.contains(" alt="), "image without alt text: <img{tag}>");
+        }
+        for tag in PAGE.split("<input").skip(1) {
+            let tag = &tag[..tag.find('>').unwrap()];
+            assert!(tag.contains("aria-label="), "input without a label: <input{tag}>");
+        }
+    }
+
     /// Starts the real server on a free port with an empty mods folder
     async fn serve() -> (u16, String, PathBuf) {
         let dir = std::env::temp_dir().join(format!("prismatic-ui-test-{}", random_token().unwrap()));
@@ -552,6 +642,19 @@ mod tests {
         let state: serde_json::Value = client.get(format!("{base}/api/state")).header(TOKEN_HEADER, &token).send().await.unwrap().json().await.unwrap();
         assert_eq!(state["mods"][0]["name"], "Fake");
         assert_eq!(state["mods"][0]["keys"][0], "Nexus:1");
+    }
+
+    #[tokio::test]
+    async fn serves_the_images_without_a_token_but_only_to_loopback_hosts() {
+        let (port, _token, _dir) = serve().await;
+        let client = wreq::Client::new();
+        for (name, kind) in [("logo.png", "image/png"), ("duck.png", "image/png"), ("dog.gif", "image/gif")] {
+            let response = client.get(format!("http://127.0.0.1:{port}/assets/{name}")).send().await.unwrap();
+            assert_eq!(response.status(), 200, "{name}");
+            assert_eq!(response.headers()["content-type"], kind, "{name}");
+        }
+        let foreign = client.get(format!("http://127.0.0.1:{port}/assets/logo.png")).header("Host", "evil.example").send().await.unwrap();
+        assert_eq!(foreign.status(), 403);
     }
 
     #[tokio::test]
@@ -619,6 +722,11 @@ mod tests {
             assert_eq!(post(&base, &token, "/api/cookie", serde_json::json!({"value": "test-value"})).await.0, 204);
             let state: serde_json::Value = wreq::Client::new().get(format!("{base}/api/state")).header(TOKEN_HEADER, &token).send().await.unwrap().json().await.unwrap();
             assert_eq!(state["cookie"], "pasted");
+
+            let forgotten = wreq::Client::new().delete(format!("{base}/api/cookie")).header(TOKEN_HEADER, &token).send().await.unwrap();
+            assert_eq!(forgotten.status(), 204);
+            let state: serde_json::Value = wreq::Client::new().get(format!("{base}/api/state")).header(TOKEN_HEADER, &token).send().await.unwrap().json().await.unwrap();
+            assert_ne!(state["cookie"], "pasted");
         }
     }
 

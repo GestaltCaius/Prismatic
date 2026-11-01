@@ -4,44 +4,31 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Prismatic</title>
+<link rel="icon" href="/assets/duck.png">
 <style>
   /* All colors, fonts and sizes live here so a theme only has to replace these values */
   :root {
-    --bg: #f6f1e7;
-    --surface: #fffdf8;
-    --text: #2b2418;
-    --muted: #7a6e5a;
-    --border: #d9ccb4;
-    --accent: #3f7d3a;
+    --bg: #e6cc96;
+    --surface: #f8e8c0;
+    --text: #3b2410;
+    --muted: #6b4c2c;
+    --border: #a8743c;
+    --accent: #447a28;
     --accent-contrast: #ffffff;
-    --ok: #2f7a3a;
-    --warn: #a86a00;
-    --danger: #b3261e;
+    --ok: #2f6e1f;
+    --warn: #9a5200;
+    --danger: #a3261e;
     --radius: 6px;
     --gap: 12px;
     --font: system-ui, -apple-system, "Segoe UI", sans-serif;
     --font-mono: ui-monospace, "SF Mono", Consolas, monospace;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #1d1a14;
-      --surface: #28241b;
-      --text: #efe7d6;
-      --muted: #a89c86;
-      --border: #453e2f;
-      --accent: #6fb36a;
-      --accent-contrast: #14110c;
-      --ok: #7fcf88;
-      --warn: #e0a64a;
-      --danger: #f08a80;
-    }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 var(--font); }
   main { max-width: 1000px; margin: 0 auto; padding: 16px; display: grid; gap: var(--gap); }
   h1 { margin: 0; font-size: 1.5rem; }
   h2 { margin: 0 0 var(--gap); font-size: 1.1rem; }
-  section, header { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+  section, header { background: var(--surface); border: 2px solid var(--border); border-radius: var(--radius); padding: 16px; }
   header { display: flex; flex-wrap: wrap; gap: var(--gap); justify-content: space-between; align-items: flex-start; }
   .muted { color: var(--muted); font-size: 0.9em; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: var(--gap); }
@@ -50,10 +37,17 @@
     padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius);
     background: var(--bg); color: var(--text); font: inherit;
   }
-  button {
+  button, summary.btn {
     padding: 7px 12px; border: 1px solid var(--border); border-radius: var(--radius);
     background: var(--surface); color: var(--text); font: inherit; cursor: pointer;
   }
+  summary.btn { display: inline-block; list-style: none; }
+  summary.btn::-webkit-details-marker { display: none; }
+  .brand { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+  .brand img, .idle img { image-rendering: pixelated; }
+  .idle { display: flex; align-items: center; gap: 12px; }
+  ::placeholder { color: var(--muted); opacity: 1; }
+  :focus-visible { outline: 3px solid var(--text); outline-offset: 2px; }
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
   button:disabled { opacity: 0.5; cursor: default; }
   .table-wrap { overflow-x: auto; }
@@ -73,27 +67,33 @@
   .item .detail { grid-column: 2; }
   .item pre { margin: 0; white-space: pre-wrap; font: inherit; color: var(--muted); }
   progress { width: 100%; height: 10px; accent-color: var(--accent); }
-  details summary { cursor: pointer; }
 </style>
 </head>
 <body>
 <main>
   <header>
-    <div>
-      <h1>Prismatic</h1>
-      <div class="muted" id="modsDir"></div>
+    <div class="brand">
+      <img src="/assets/logo.png" width="228" height="104" alt="Stardew Valley logo">
+      <div>
+        <h1>Prismatic</h1>
+        <div class="muted" id="modsDir"></div>
+      </div>
     </div>
+    <div>
     <details id="cookieBox">
-      <summary>Nexus cookie: <span id="cookieStatus">checking</span></summary>
+      <summary class="btn">Set Nexus cookie</summary>
       <p class="muted">Downloads from Nexus Mods need your <code>nexusmods_session</code> cookie. Open nexusmods.com signed in,
         then in the browser developer tools go to Application (Chrome) or Storage (Firefox), Cookies, and copy its value.
-        It is kept in this browser and sent only to this local program. Treat it like a password.</p>
+        It is kept in this browser and sent only to this local program. Treat it like a password.
+        A pasted cookie wins over the NEXUS_COOKIE variable and your browser's cookies until you forget it.</p>
       <form class="row grow" id="cookieForm">
         <input type="password" id="cookieValue" autocomplete="off" placeholder="nexusmods_session value" aria-label="Nexus cookie">
-        <button class="primary" type="submit">Save</button>
-        <button type="button" id="cookieForget">Forget</button>
+        <button class="primary" type="submit">Use this cookie</button>
+        <button type="button" id="cookieForget">Forget, use automatic</button>
       </form>
     </details>
+    <div class="muted" id="cookieStatus" aria-live="polite">checking</div>
+    </div>
   </header>
 
   <div class="banner" id="error" role="alert"></div>
@@ -227,7 +227,11 @@ function renderButtons() {
 }
 
 function renderJobs() {
-  if (!state.jobs.length) { $('jobs').textContent = 'Nothing yet.'; return; }
+  if (!state.jobs.length) {
+    $('jobs').replaceChildren(el('div', { class: 'idle' },
+      el('img', { src: '/assets/dog.gif', width: 96, height: 96, alt: '' }), el('span', {}, 'Nothing yet.')));
+    return;
+  }
   $('jobs').replaceChildren(...[...state.jobs].reverse().map((job) => {
     const done = job.items.filter((i) => !['queued', 'running'].includes(i.status)).length;
     const head = el('strong', {}, job.title + ' ');
@@ -245,10 +249,12 @@ function renderJobs() {
   }));
 }
 
+let cookieSeen = false;
 function renderCookie(source) {
-  $('cookieStatus').textContent = source === 'pasted' ? 'saved'
-    : source === 'environment' ? 'from the environment'
-    : 'not set (your browser\'s cookies will be tried)';
+  if (!cookieSeen) { cookieSeen = true; $('cookieBox').open = !source; }
+  $('cookieStatus').textContent = source === 'pasted' ? 'Using the pasted cookie (overrides the environment and browser)'
+    : source === 'environment' ? 'Cookie from the environment'
+    : 'No cookie set (your browser\'s cookies will be tried)';
 }
 
 let lastModsJson = '';
@@ -312,10 +318,11 @@ $('cookieForm').addEventListener('submit', (e) => {
     await refresh();
   });
 });
-$('cookieForget').addEventListener('click', () => {
+$('cookieForget').addEventListener('click', () => guarded(async () => {
   try { localStorage.removeItem('prismatic.cookie'); } catch { /* storage may be blocked */ }
-  showError('Forgotten in this browser. The running program keeps it until you stop it.');
-});
+  await api('/api/cookie', 'DELETE');
+  await refresh();
+}));
 
 $('importFile').addEventListener('change', (e) => guarded(async () => {
   const file = e.target.files[0];
