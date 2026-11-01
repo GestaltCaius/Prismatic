@@ -40,6 +40,21 @@ pub fn set_nexus_cookie(value: &str) {
     }
 }
 
+/// The `NEXUS_COOKIE` variable, as a bare session value
+#[cfg(feature = "nexus")]
+pub fn env_nexus_cookie() -> Option<String> {
+    std::env::var("NEXUS_COOKIE").ok().map(|val| session_from(&val))
+}
+
+/// Reads the session from the browsers' cookie stores, which may ask for a keychain password
+#[cfg(feature = "nexus")]
+pub fn browser_nexus_cookie() -> Result<String> {
+    rookie::load(Some(vec!["nexusmods.com".to_string()])).map_err(|e| anyhow!("{e}"))?.iter()
+        .find(|c| c.name == "nexusmods_session")
+        .map(|c| c.value.clone())
+        .ok_or_else(|| anyhow!("No nexusmods_session found. Set the NEXUS_COOKIE environment variable or sign in to Nexus in your browser."))
+}
+
 /// Drops the pasted cookie so the environment and the browser are used again
 #[cfg(feature = "nexus")]
 pub fn clear_nexus_cookie() {
@@ -243,15 +258,7 @@ pub async fn nexus_download(mod_id: &str, progress: &Progress) -> Result<Bytes> 
         pasted
     } else {
         NEXUS_SESSION.get_or_try_init(|| async {
-            if let Ok(val) = std::env::var("NEXUS_COOKIE") {
-                return Ok(session_from(&val));
-            }
-            Result::<_, anyhow::Error>::Ok(
-                rookie::load(Some(vec!["nexusmods.com".to_string()])).map_err(|e| anyhow!("{e}"))?.iter()
-                    .find(|c| c.name == "nexusmods_session")
-                    .ok_or_else(|| anyhow!("No nexusmods_session found. Set the NEXUS_COOKIE environment variable or sign in to Nexus in your browser."))?
-                    .value.clone()
-            )
+            env_nexus_cookie().map_or_else(browser_nexus_cookie, Ok)
         }).await?.clone()
     };
     // Limit concurrency to avoid Nexus rate-limiting

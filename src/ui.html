@@ -37,12 +37,10 @@
     padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius);
     background: var(--bg); color: var(--text); font: inherit;
   }
-  button, summary.btn {
+  button {
     padding: 7px 12px; border: 1px solid var(--border); border-radius: var(--radius);
     background: var(--surface); color: var(--text); font: inherit; cursor: pointer;
   }
-  summary.btn { display: inline-block; list-style: none; }
-  summary.btn::-webkit-details-marker { display: none; }
   .brand { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
   .brand img, .idle img { image-rendering: pixelated; }
   .idle { display: flex; align-items: center; gap: 12px; }
@@ -79,24 +77,27 @@
         <div class="muted" id="modsDir"></div>
       </div>
     </div>
-    <div>
-    <details id="cookieBox">
-      <summary class="btn">Set Nexus cookie</summary>
-      <p class="muted">Downloads from Nexus Mods need your <code>nexusmods_session</code> cookie. Open nexusmods.com signed in,
-        then in the browser developer tools go to Application (Chrome) or Storage (Firefox), Cookies, and copy its value.
-        It is kept in this browser and sent only to this local program. Treat it like a password.
-        A pasted cookie wins over the NEXUS_COOKIE variable and your browser's cookies until you forget it.</p>
-      <form class="row grow" id="cookieForm">
-        <input type="password" id="cookieValue" autocomplete="off" placeholder="nexusmods_session value" aria-label="Nexus cookie">
-        <button class="primary" type="submit">Use this cookie</button>
-        <button type="button" id="cookieForget">Forget, use automatic</button>
-      </form>
-    </details>
-    <div class="muted" id="cookieStatus" aria-live="polite">checking</div>
-    </div>
   </header>
 
   <div class="banner" id="error" role="alert"></div>
+
+  <section>
+    <h2>Nexus cookie</h2>
+    <div id="cookieStatus" aria-live="polite">checking</div>
+    <p class="muted">Downloads from Nexus Mods need your <code>nexusmods_session</code> cookie. Prismatic tries the NEXUS_COOKIE variable, then your browser's cookies.
+      To use another one, open nexusmods.com signed in, then in the browser developer tools go to Application (Chrome) or Storage (Firefox), Cookies, and copy its value.
+      A pasted cookie wins over the automatic ones until you forget it. It is kept in this browser and sent only to this local program. Treat it like a password.</p>
+    <form class="row grow" id="cookieForm">
+      <input type="password" id="cookieValue" autocomplete="off" placeholder="nexusmods_session value" aria-label="Nexus cookie">
+      <button class="primary" type="submit">Use this cookie</button>
+      <button type="button" id="cookieForget" disabled>Forget pasted cookie</button>
+    </form>
+    <div class="row">
+      <span class="muted">Fill the field from:</span>
+      <button type="button" data-fill="environment">the NEXUS_COOKIE variable</button>
+      <button type="button" data-fill="browser">your browser's cookies</button>
+    </div>
+  </section>
 
   <section>
     <h2>Installed mods</h2>
@@ -249,9 +250,8 @@ function renderJobs() {
   }));
 }
 
-let cookieSeen = false;
 function renderCookie(source) {
-  if (!cookieSeen) { cookieSeen = true; $('cookieBox').open = !source; }
+  $('cookieForget').disabled = source !== 'pasted';
   $('cookieStatus').textContent = source === 'pasted' ? 'Using the pasted cookie (overrides the environment and browser)'
     : source === 'environment' ? 'Cookie from the environment'
     : 'No cookie set (your browser\'s cookies will be tried)';
@@ -318,6 +318,11 @@ $('cookieForm').addEventListener('submit', (e) => {
     await refresh();
   });
 });
+document.querySelectorAll('[data-fill]').forEach((button) => button.addEventListener('click', () => guarded(async () => {
+  const found = await api('/api/cookie/' + button.dataset.fill, 'POST');
+  $('cookieValue').value = found.value;
+  $('cookieValue').focus();
+})));
 $('cookieForget').addEventListener('click', () => guarded(async () => {
   try { localStorage.removeItem('prismatic.cookie'); } catch { /* storage may be blocked */ }
   await api('/api/cookie', 'DELETE');

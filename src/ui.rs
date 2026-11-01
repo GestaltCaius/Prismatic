@@ -188,6 +188,31 @@ async fn api_cookie(Json(request): Json<CookieRequest>) -> ApiResult<StatusCode>
     { Err(bad_request("Prismatic was compiled without Nexus support")) }
 }
 
+#[derive(Serialize)]
+struct CookieValue {
+    value: String,
+}
+
+/// Hands the cookie from the environment to the page so it can fill the field, the page is token protected and local
+async fn api_cookie_from_environment() -> ApiResult<Json<CookieValue>> {
+    #[cfg(feature = "nexus")]
+    { crate::update::env_nexus_cookie().map(|value| Json(CookieValue { value })).ok_or_else(|| bad_request("The NEXUS_COOKIE variable is not set")) }
+    #[cfg(not(feature = "nexus"))]
+    { Err(bad_request("Prismatic was compiled without Nexus support")) }
+}
+
+async fn api_cookie_from_browser() -> ApiResult<Json<CookieValue>> {
+    #[cfg(feature = "nexus")]
+    {
+        let value = tokio::task::spawn_blocking(crate::update::browser_nexus_cookie).await
+            .map_err(|e| server_error(&anyhow!("{e}")))?
+            .map_err(|e| bad_request(&e.to_string()))?;
+        Ok(Json(CookieValue { value }))
+    }
+    #[cfg(not(feature = "nexus"))]
+    { Err(bad_request("Prismatic was compiled without Nexus support")) }
+}
+
 async fn api_forget_cookie() -> StatusCode {
     #[cfg(feature = "nexus")]
     crate::update::clear_nexus_cookie();
@@ -448,6 +473,8 @@ fn router(state: Shared) -> Router {
         .route("/assets/dog.gif", get(|| async { image("image/gif", DOG) }))
         .route("/api/state", get(api_state))
         .route("/api/cookie", post(api_cookie).delete(api_forget_cookie))
+        .route("/api/cookie/environment", post(api_cookie_from_environment))
+        .route("/api/cookie/browser", post(api_cookie_from_browser))
         .route("/api/check", post(api_check))
         .route("/api/update", post(api_update))
         .route("/api/add", post(api_add))
@@ -727,6 +754,12 @@ mod tests {
             assert_eq!(forgotten.status(), 204);
             let state: serde_json::Value = wreq::Client::new().get(format!("{base}/api/state")).header(TOKEN_HEADER, &token).send().await.unwrap().json().await.unwrap();
             assert_ne!(state["cookie"], "pasted");
+
+            std::env::set_var("NEXUS_COOKIE", "other=1; nexusmods_session=from-env");
+            let (status, body) = post(&base, &token, "/api/cookie/environment", serde_json::json!({})).await;
+            assert_eq!((status, body.as_str()), (200, r#"{"value":"from-env"}"#));
+            std::env::remove_var("NEXUS_COOKIE");
+            assert_eq!(post(&base, &token, "/api/cookie/environment", serde_json::json!({})).await.0, 400);
         }
     }
 
