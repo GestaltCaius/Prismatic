@@ -3,10 +3,12 @@ use std::fmt;
 use std::io::IsTerminal;
 use std::path::Path;
 use anyhow::{anyhow, bail, Result};
+use indicatif::MultiProgress;
 use inquire::MultiSelect;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use crate::mod_locator::{is_nexus_id, locate_mods, Mod, UpdateKey};
+use crate::progress::{self, Event, Progress};
 use crate::smapi;
 
 pub const DEFAULT_FILE: &str = "prismatic-mods.json";
@@ -148,7 +150,7 @@ fn is_installed(mods: &[Mod], entry: &Entry) -> bool {
 }
 
 #[cfg_attr(not(feature = "nexus"), allow(unused_variables, clippy::unused_async))]
-async fn install(mods: &[Mod], mods_dir: &Path, entry: &Entry) -> Result<()> {
+async fn install(mods: &[Mod], mods_dir: &Path, entry: &Entry, progress: &Progress) -> Result<()> {
     let Some(key) = installable(&entry.keys) else {
         if entry.keys.iter().any(|key| is_source(key, "github")) {
             bail!("GitHub installs are not yet implemented");
@@ -156,7 +158,7 @@ async fn install(mods: &[Mod], mods_dir: &Path, entry: &Entry) -> Result<()> {
         bail!("No supported source, keys: {}", entry.keys.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "));
     };
     #[cfg(feature = "nexus")]
-    { crate::add::add_nexus(mods, mods_dir, &key.id).await }
+    { crate::add::add_nexus(mods, mods_dir, &key.id, progress).await }
     #[cfg(not(feature = "nexus"))]
     { bail!("Prismatic was compiled without Nexus support") }
 }
@@ -173,6 +175,7 @@ pub async fn import(mods: &[Mod], mods_dir: &Path, file: &Path, all: bool) -> Re
     }
     let entries = pick(list.mods, "Pick mods to install (space: toggle, right: all, left: none, enter: confirm)", all)?;
     let mut mods = mods.to_vec();
+    let multi = MultiProgress::new();
     let (mut installed, mut skipped, mut failed) = (0, 0, 0);
     // Sequential: Nexus rate-limits, and a pack can satisfy later entries
     for entry in entries {
@@ -184,7 +187,10 @@ pub async fn import(mods: &[Mod], mods_dir: &Path, file: &Path, all: bool) -> Re
         if installable(&entry.keys).is_some_and(|key| key.subkey.is_some()) {
             eprintln!("{}: Subkeys are not yet supported, installing the main file", entry.describe());
         }
-        match install(&mods, mods_dir, &entry).await {
+        let progress = progress::bar(&multi, entry.name.as_deref().unwrap_or("Unnamed mod"));
+        let result = install(&mods, mods_dir, &entry, &progress).await;
+        progress.emit(Event::Done);
+        match result {
             Ok(()) => {
                 installed += 1;
                 mods = locate_mods(mods_dir).await?;

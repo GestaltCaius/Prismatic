@@ -20,7 +20,7 @@ pub struct Manifest {
     pub author: Option<String>,
     pub version: Option<String>,
     pub description: Option<String>,
-    /// PascalCase would give `UniqueId`, manifests write `UniqueID`
+    /// `PascalCase` would give `UniqueId`, manifests write `UniqueID`
     #[serde(rename = "UniqueID", alias = "UniqueId")]
     pub unique_id: Option<String>,
     #[serde(default)]
@@ -101,6 +101,15 @@ fn parse_manifest(text: &str) -> anyhow::Result<Manifest> {
         json.push(c);
     }
     Ok(serde_json::from_str(&json)?)
+}
+
+/// Mods in `dir`: `dir` itself if it holds a manifest, otherwise those below it
+pub async fn locate_mods_at(dir: &Path) -> anyhow::Result<Vec<Mod>> {
+    let manifest = dir.join("manifest.json");
+    if manifest.is_file() {
+        return Ok(vec![Mod { path: dir.to_path_buf(), manifest: parse_manifest(&fs::read_to_string(manifest).await?)? }]);
+    }
+    locate_mods(dir).await
 }
 
 #[async_recursion]

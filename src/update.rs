@@ -1,9 +1,11 @@
 use std::collections::HashSet;
 use std::io::Cursor;
-use std::path::{PathBuf};
+use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Result};
+use indicatif::MultiProgress;
 use async_recursion::async_recursion;
 use bytes::Bytes;
+use futures_util::StreamExt;
 #[cfg(feature = "nexus")]
 use scraper::{Html, Selector};
 use serde_json::json;
@@ -11,7 +13,8 @@ use tokio::fs;
 use tokio::sync::OnceCell;
 use tokio::task::JoinSet;
 use zip::ZipArchive;
-use crate::mod_locator::{Mod, UpdateKey, UpdateKeys};
+use crate::mod_locator::{locate_mods_at, Mod, UpdateKey, UpdateKeys};
+use crate::progress::{self, Event, Progress};
 
 #[cfg(feature = "nexus")]
 static NEXUS_SESSION: OnceCell<String> = OnceCell::const_new();
@@ -33,23 +36,32 @@ pub async fn update(mods: &Vec<Mod>, mods_dir: &PathBuf, force: bool) -> Result<
     let mut failed = 0;
     let mut skipped = 0;
     let mut set: JoinSet<(Mod, UpdateResult)> = JoinSet::new();
+    let multi = MultiProgress::new();
     for mod_ in mods {
         let name = mod_.manifest.name.clone().unwrap_or(mod_.path.strip_prefix(mods_dir)?.display().to_string());
         if let Some(source) = mod_.manifest.update_keys.preferred() {
             if source.subkey.is_some() {
                 failed += 1;
-                eprintln!("{name}: Subkeys are not yet supported");
+                multi.suspend(|| eprintln!("{name}: Subkeys are not yet supported"));
                 continue;
             }
-            let (m, source) = (mod_.clone(), source.clone());
+            let (m, source, progress) = (mod_.clone(), source.clone(), progress::bar(&multi, &name));
             match &*source.source.to_lowercase() {
-                #[cfg(feature = "github")] "github" => {set.spawn(async move { github(m.clone(), source, force).await.unwrap_or_else(|e| (m, UpdateResult::Failure(e.to_string()))) });}
-                #[cfg(feature = "nexus")] "nexus" => {set.spawn(async move { nexus(m.clone(), source, force).await.unwrap_or_else(|e| (m, UpdateResult::Failure(e.to_string()))) });}
+                #[cfg(feature = "github")] "github" => {set.spawn(async move {
+                    let result = github(m.clone(), source, force, &progress).await.unwrap_or_else(|e| (m, UpdateResult::Failure(e.to_string())));
+                    progress.emit(Event::Done);
+                    result
+                });}
+                #[cfg(feature = "nexus")] "nexus" => {set.spawn(async move {
+                    let result = nexus(m.clone(), source, force, &progress).await.unwrap_or_else(|e| (m, UpdateResult::Failure(e.to_string())));
+                    progress.emit(Event::Done);
+                    result
+                });}
                 _ => unreachable!()
             }
         } else {
             failed += 1;
-            eprintln!("{name}: Unknown or unsupported source");
+            multi.suspend(|| eprintln!("{name}: Unknown or unsupported source"));
         }
     }
     while let Some(res) = set.join_next().await {
@@ -59,18 +71,18 @@ pub async fn update(mods: &Vec<Mod>, mods_dir: &PathBuf, force: bool) -> Result<
             UpdateResult::Success { new_version } => {
                 updated += 1;
                 if let Some(old_version) = finished.manifest.version {
-                    println!("{name}: {old_version} -> {new_version}");
+                    multi.suspend(|| println!("{name}: {old_version} -> {new_version}"));
                 } else {
-                    println!("{name}: {new_version}");
+                    multi.suspend(|| println!("{name}: {new_version}"));
                 }
             }
             UpdateResult::AlreadyUpToDate => {
                 skipped += 1;
-                eprintln!("{name}: Already up to date");
+                multi.suspend(|| eprintln!("{name}: Already up to date"));
             }
             UpdateResult::Failure(message) => {
                 failed += 1;
-                eprintln!("{name}: {message}");
+                multi.suspend(|| eprintln!("{name}: {message}"));
             }
         }
     }
@@ -116,7 +128,7 @@ async fn check_for_updates(mod_: &Mod) -> Result<bool> {
 }
 
 #[cfg(feature = "github")]
-async fn github(mod_: Mod, update_key: UpdateKey, force: bool) -> Result<(Mod, UpdateResult)> {
+async fn github(mod_: Mod, update_key: UpdateKey, force: bool, progress: &Progress) -> Result<(Mod, UpdateResult)> {
     if !force && !check_for_updates(&mod_).await? {
         return Ok((mod_, UpdateResult::AlreadyUpToDate));
     }
@@ -138,28 +150,52 @@ async fn github(mod_: Mod, update_key: UpdateKey, force: bool) -> Result<(Mod, U
     if assets.len() > 1 {
         return Ok((mod_, UpdateResult::Failure(format!("Multiple valid assets found: {assets:?}"))));
     }
-    let asset = reqwest_client().await?
+    progress.emit(Event::Stage("Starting download"));
+    let response = reqwest_client().await?
         .get(assets[0].browser_download_url.as_str())
         .send().await?
-        .error_for_status()?
-        .bytes().await?;
-    install(&mod_, asset).await?;
-    Ok((mod_, UpdateResult::Success {new_version: version.into()}))
+        .error_for_status()?;
+    let asset = read_body(response, progress).await?;
+    let new_dir = install(&mod_, asset, progress).await?;
+    let new_version = installed_version(&new_dir, mod_.manifest.unique_id.as_deref()).await.unwrap_or_else(|| version.into());
+    Ok((mod_, UpdateResult::Success {new_version}))
 }
 
 #[cfg(feature = "nexus")]
-async fn nexus(mod_: Mod, update_key: UpdateKey, force: bool) -> Result<(Mod, UpdateResult)> {
+async fn nexus(mod_: Mod, update_key: UpdateKey, force: bool, progress: &Progress) -> Result<(Mod, UpdateResult)> {
     if !force && !check_for_updates(&mod_).await? {
         return Ok((mod_, UpdateResult::AlreadyUpToDate));
     }
-    let file = nexus_download(&update_key.id).await?;
-    install(&mod_, file).await?;
-    Ok((mod_, UpdateResult::Success {new_version: "latest".into()}))  // TODO: Determine actual new version
+    let file = nexus_download(&update_key.id, progress).await?;
+    let new_dir = install(&mod_, file, progress).await?;
+    let new_version = installed_version(&new_dir, mod_.manifest.unique_id.as_deref()).await.unwrap_or_else(|| "unknown".into());
+    Ok((mod_, UpdateResult::Success {new_version}))
+}
+
+/// Version in the manifest of a freshly installed mod, picking the one matching `unique_id` out of a pack
+async fn installed_version(dir: &Path, unique_id: Option<&str>) -> Option<String> {
+    let mods = locate_mods_at(dir).await.ok()?;
+    mods.iter()
+        .find(|m| m.manifest.unique_id.as_deref().zip(unique_id).is_some_and(|(a, b)| a.eq_ignore_ascii_case(b)))
+        .or_else(|| mods.first())?
+        .manifest.version.clone()
+}
+
+/// Reads a response body, reporting progress as it arrives
+async fn read_body(response: wreq::Response, progress: &Progress) -> Result<Bytes> {
+    let total = response.content_length();
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        body.extend_from_slice(&chunk?);
+        progress.emit(Event::Download { done: body.len() as u64, total });
+    }
+    Ok(body.into())
 }
 
 /// Downloads the main file of a Stardew Valley Nexus mod.
 #[cfg(feature = "nexus")]
-pub async fn nexus_download(mod_id: &str) -> Result<Bytes> {
+pub async fn nexus_download(mod_id: &str, progress: &Progress) -> Result<Bytes> {
     // nexusmods_session: NEXUS_COOKIE env var (bare value or full cookie string) or browser via rookie
     let session = NEXUS_SESSION.get_or_try_init(|| async {
         if let Ok(val) = std::env::var("NEXUS_COOKIE") {
@@ -175,11 +211,13 @@ pub async fn nexus_download(mod_id: &str) -> Result<Bytes> {
         )
     }).await?;
     // Limit concurrency to avoid Nexus rate-limiting
+    progress.emit(Event::Stage("Waiting for a download slot"));
     let _permit = NEXUS_SEMAPHORE.acquire().await?;
     // wreq emulates Chrome TLS/HTTP2 fingerprint — Cloudflare accepts without cf_clearance
     let client = reqwest_client().await?;
     let cookie = format!("nexusmods_session={session}");
     let files_url = format!("https://www.nexusmods.com/stardewvalley/mods/{mod_id}?tab=files");
+    progress.emit(Event::Stage("Finding the file"));
     let file_id = {
         let html = client.get(&files_url)
             .header("Cookie", &cookie)
@@ -195,6 +233,7 @@ pub async fn nexus_download(mod_id: &str) -> Result<Bytes> {
             .attr("data-id").ok_or_else(|| anyhow!("HTML parsing failed: couldn't find data-id attribute"))?
             .to_string()
     };
+    progress.emit(Event::Stage("Requesting the download link"));
     let dl_resp = client
         .post("https://www.nexusmods.com/Core/Libs/Common/Managers/Downloads?GenerateDownloadUrl")
         .form(&json!({"fid": file_id, "game_id": 1303, "collection_id": 0}))
@@ -209,10 +248,12 @@ pub async fn nexus_download(mod_id: &str) -> Result<Bytes> {
         .get("url").ok_or_else(|| anyhow!("GenerateDownloadUrl unexpected response: {dl_resp}"))?
         .as_str().ok_or_else(|| anyhow!("GenerateDownloadUrl: url is not a string"))?
         .to_string();
-    Ok(client.get(&download_url).header("Cookie", &cookie).send().await?.error_for_status()?.bytes().await?)
+    let response = client.get(&download_url).header("Cookie", &cookie).send().await?.error_for_status()?;
+    read_body(response, progress).await
 }
 
-async fn install(mod_: &Mod, archive: Bytes) -> Result<()> {
+async fn install(mod_: &Mod, archive: Bytes, progress: &Progress) -> Result<PathBuf> {
+    progress.emit(Event::Stage("Extracting"));
     let old_dir = mod_.path.join("../.old/");
     if !old_dir.is_dir() {
         fs::create_dir(&old_dir).await?;
@@ -249,7 +290,7 @@ async fn install(mod_: &Mod, archive: Bytes) -> Result<()> {
         }
         copy(&file.path(), &new_path).await?;
     }
-    Ok(())
+    Ok(new_dir)
 }
 
 #[async_recursion]
