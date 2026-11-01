@@ -20,7 +20,37 @@ use crate::progress::{self, Event, Progress};
 static NEXUS_SESSION: OnceCell<String> = OnceCell::const_new();
 #[cfg(feature = "nexus")]
 static NEXUS_SEMAPHORE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+/// Cookie pasted in the web UI, it takes precedence over the environment and the browser
+#[cfg(feature = "nexus")]
+static NEXUS_COOKIE_OVERRIDE: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
 static REQWEST: OnceCell<wreq::Client> = OnceCell::const_new();
+
+/// `nexusmods_session` out of a bare value or a full cookie string
+#[cfg(feature = "nexus")]
+fn session_from(val: &str) -> String {
+    val.split(';')
+        .find_map(|p| p.trim().strip_prefix("nexusmods_session=").map(str::to_string))
+        .unwrap_or_else(|| val.trim().to_string())
+}
+
+#[cfg(feature = "nexus")]
+pub fn set_nexus_cookie(value: &str) {
+    if let Ok(mut cookie) = NEXUS_COOKIE_OVERRIDE.write() {
+        *cookie = Some(session_from(value));
+    }
+}
+
+/// Where the Nexus cookie will come from, without touching the browser
+#[cfg(feature = "nexus")]
+pub fn nexus_cookie_source() -> Option<&'static str> {
+    if NEXUS_COOKIE_OVERRIDE.read().is_ok_and(|cookie| cookie.is_some()) {
+        Some("pasted")
+    } else if std::env::var("NEXUS_COOKIE").is_ok() {
+        Some("environment")
+    } else {
+        None
+    }
+}
 
 pub async fn reqwest_client() -> Result<&'static wreq::Client> {
     REQWEST.get_or_try_init(|| async {
@@ -39,26 +69,12 @@ pub async fn update(mods: &Vec<Mod>, mods_dir: &PathBuf, force: bool) -> Result<
     let multi = MultiProgress::new();
     for mod_ in mods {
         let name = mod_.manifest.name.clone().unwrap_or(mod_.path.strip_prefix(mods_dir)?.display().to_string());
-        if let Some(source) = mod_.manifest.update_keys.preferred() {
-            if source.subkey.is_some() {
-                failed += 1;
-                multi.suspend(|| eprintln!("{name}: Subkeys are not yet supported"));
-                continue;
-            }
-            let (m, source, progress) = (mod_.clone(), source.clone(), progress::bar(&multi, &name));
-            match &*source.source.to_lowercase() {
-                #[cfg(feature = "github")] "github" => {set.spawn(async move {
-                    let result = github(m.clone(), source, force, &progress).await.unwrap_or_else(|e| (m, UpdateResult::Failure(e.to_string())));
-                    progress.emit(Event::Done);
-                    result
-                });}
-                #[cfg(feature = "nexus")] "nexus" => {set.spawn(async move {
-                    let result = nexus(m.clone(), source, force, &progress).await.unwrap_or_else(|e| (m, UpdateResult::Failure(e.to_string())));
-                    progress.emit(Event::Done);
-                    result
-                });}
-                _ => unreachable!()
-            }
+        if mod_.manifest.update_keys.preferred().is_some() {
+            let (m, progress) = (mod_.clone(), progress::bar(&multi, &name));
+            set.spawn(async move {
+                let result = update_mod(&m, force, &progress).await;
+                (m, result)
+            });
         } else {
             failed += 1;
             multi.suspend(|| eprintln!("{name}: Unknown or unsupported source"));
@@ -94,12 +110,29 @@ pub async fn update(mods: &Vec<Mod>, mods_dir: &PathBuf, force: bool) -> Result<
     Ok(())
 }
 
-enum UpdateResult {
+pub enum UpdateResult {
     Success {
         new_version: String,
     },
     AlreadyUpToDate,
     Failure(String),
+}
+
+/// Updates one mod from its preferred update key
+pub async fn update_mod(mod_: &Mod, force: bool, progress: &Progress) -> UpdateResult {
+    let Some(key) = mod_.manifest.update_keys.preferred().cloned() else {
+        return UpdateResult::Failure("Unknown or unsupported source".into());
+    };
+    if key.subkey.is_some() {
+        return UpdateResult::Failure("Subkeys are not yet supported".into());
+    }
+    let result = match &*key.source.to_lowercase() {
+        #[cfg(feature = "github")] "github" => github(mod_, key, force, progress).await,
+        #[cfg(feature = "nexus")] "nexus" => nexus(mod_, key, force, progress).await,
+        _ => Err(anyhow!("Unsupported source: {}", key.source)),
+    };
+    progress.emit(Event::Done);
+    result.unwrap_or_else(|e| UpdateResult::Failure(e.to_string()))
 }
 
 async fn check_for_updates(mod_: &Mod) -> Result<bool> {
@@ -128,9 +161,9 @@ async fn check_for_updates(mod_: &Mod) -> Result<bool> {
 }
 
 #[cfg(feature = "github")]
-async fn github(mod_: Mod, update_key: UpdateKey, force: bool, progress: &Progress) -> Result<(Mod, UpdateResult)> {
-    if !force && !check_for_updates(&mod_).await? {
-        return Ok((mod_, UpdateResult::AlreadyUpToDate));
+async fn github(mod_: &Mod, update_key: UpdateKey, force: bool, progress: &Progress) -> Result<UpdateResult> {
+    if !force && !check_for_updates(mod_).await? {
+        return Ok(UpdateResult::AlreadyUpToDate);
     }
     let (owner, repo) = update_key.id.split_once('/').ok_or_else(|| anyhow!("Invalid GitHub repo"))?;
     let release = octocrab::instance()
@@ -139,16 +172,16 @@ async fn github(mod_: Mod, update_key: UpdateKey, force: bool, progress: &Progre
         .get_latest().await?;
     let version = release.tag_name.trim_start_matches(['v', 'V']);
     if !force && mod_.manifest.version == Some(version.into()) {
-        return Ok((mod_, UpdateResult::AlreadyUpToDate));
+        return Ok(UpdateResult::AlreadyUpToDate);
     }
     let assets: Vec<_> = release.assets.iter()
         .filter(|asset| asset.name.to_lowercase().ends_with(".zip"))
         .collect();
     if assets.is_empty() {
-        return Ok((mod_, UpdateResult::Failure("No valid release assets found".into())));
+        return Ok(UpdateResult::Failure("No valid release assets found".into()));
     }
     if assets.len() > 1 {
-        return Ok((mod_, UpdateResult::Failure(format!("Multiple valid assets found: {assets:?}"))));
+        return Ok(UpdateResult::Failure(format!("Multiple valid assets found: {assets:?}")));
     }
     progress.emit(Event::Stage("Starting download"));
     let response = reqwest_client().await?
@@ -156,20 +189,20 @@ async fn github(mod_: Mod, update_key: UpdateKey, force: bool, progress: &Progre
         .send().await?
         .error_for_status()?;
     let asset = read_body(response, progress).await?;
-    let new_dir = install(&mod_, asset, progress).await?;
+    let new_dir = install(mod_, asset, progress).await?;
     let new_version = installed_version(&new_dir, mod_.manifest.unique_id.as_deref()).await.unwrap_or_else(|| version.into());
-    Ok((mod_, UpdateResult::Success {new_version}))
+    Ok(UpdateResult::Success {new_version})
 }
 
 #[cfg(feature = "nexus")]
-async fn nexus(mod_: Mod, update_key: UpdateKey, force: bool, progress: &Progress) -> Result<(Mod, UpdateResult)> {
-    if !force && !check_for_updates(&mod_).await? {
-        return Ok((mod_, UpdateResult::AlreadyUpToDate));
+async fn nexus(mod_: &Mod, update_key: UpdateKey, force: bool, progress: &Progress) -> Result<UpdateResult> {
+    if !force && !check_for_updates(mod_).await? {
+        return Ok(UpdateResult::AlreadyUpToDate);
     }
     let file = nexus_download(&update_key.id, progress).await?;
-    let new_dir = install(&mod_, file, progress).await?;
+    let new_dir = install(mod_, file, progress).await?;
     let new_version = installed_version(&new_dir, mod_.manifest.unique_id.as_deref()).await.unwrap_or_else(|| "unknown".into());
-    Ok((mod_, UpdateResult::Success {new_version}))
+    Ok(UpdateResult::Success {new_version})
 }
 
 /// Version in the manifest of a freshly installed mod, picking the one matching `unique_id` out of a pack
@@ -197,19 +230,22 @@ async fn read_body(response: wreq::Response, progress: &Progress) -> Result<Byte
 #[cfg(feature = "nexus")]
 pub async fn nexus_download(mod_id: &str, progress: &Progress) -> Result<Bytes> {
     // nexusmods_session: NEXUS_COOKIE env var (bare value or full cookie string) or browser via rookie
-    let session = NEXUS_SESSION.get_or_try_init(|| async {
-        if let Ok(val) = std::env::var("NEXUS_COOKIE") {
-            return Ok(val.split(';')
-                .find_map(|p| p.trim().strip_prefix("nexusmods_session=").map(str::to_string))
-                .unwrap_or(val));
-        }
-        Result::<_, anyhow::Error>::Ok(
-            rookie::load(Some(vec!["nexusmods.com".to_string()])).map_err(|e| anyhow!("{e}"))?.iter()
-                .find(|c| c.name == "nexusmods_session")
-                .ok_or_else(|| anyhow!("No nexusmods_session found. Set the NEXUS_COOKIE environment variable or sign in to Nexus in your browser."))?
-                .value.clone()
-        )
-    }).await?;
+    let pasted = NEXUS_COOKIE_OVERRIDE.read().ok().and_then(|cookie| cookie.clone());
+    let session = if let Some(pasted) = pasted {
+        pasted
+    } else {
+        NEXUS_SESSION.get_or_try_init(|| async {
+            if let Ok(val) = std::env::var("NEXUS_COOKIE") {
+                return Ok(session_from(&val));
+            }
+            Result::<_, anyhow::Error>::Ok(
+                rookie::load(Some(vec!["nexusmods.com".to_string()])).map_err(|e| anyhow!("{e}"))?.iter()
+                    .find(|c| c.name == "nexusmods_session")
+                    .ok_or_else(|| anyhow!("No nexusmods_session found. Set the NEXUS_COOKIE environment variable or sign in to Nexus in your browser."))?
+                    .value.clone()
+            )
+        }).await?.clone()
+    };
     // Limit concurrency to avoid Nexus rate-limiting
     progress.emit(Event::Stage("Waiting for a download slot"));
     let _permit = NEXUS_SEMAPHORE.acquire().await?;

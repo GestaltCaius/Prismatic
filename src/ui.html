@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prismatic</title>
+<style>
+  /* All colors, fonts and sizes live here so a theme only has to replace these values */
+  :root {
+    --bg: #f6f1e7;
+    --surface: #fffdf8;
+    --text: #2b2418;
+    --muted: #7a6e5a;
+    --border: #d9ccb4;
+    --accent: #3f7d3a;
+    --accent-contrast: #ffffff;
+    --ok: #2f7a3a;
+    --warn: #a86a00;
+    --danger: #b3261e;
+    --radius: 6px;
+    --gap: 12px;
+    --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1d1a14;
+      --surface: #28241b;
+      --text: #efe7d6;
+      --muted: #a89c86;
+      --border: #453e2f;
+      --accent: #6fb36a;
+      --accent-contrast: #14110c;
+      --ok: #7fcf88;
+      --warn: #e0a64a;
+      --danger: #f08a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 var(--font); }
+  main { max-width: 1000px; margin: 0 auto; padding: 16px; display: grid; gap: var(--gap); }
+  h1 { margin: 0; font-size: 1.5rem; }
+  h2 { margin: 0 0 var(--gap); font-size: 1.1rem; }
+  section, header { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+  header { display: flex; flex-wrap: wrap; gap: var(--gap); justify-content: space-between; align-items: flex-start; }
+  .muted { color: var(--muted); font-size: 0.9em; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: var(--gap); }
+  .row.grow input[type=text], .row.grow input[type=search], .row.grow input[type=password] { flex: 1 1 260px; }
+  input[type=text], input[type=search], input[type=password] {
+    padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--bg); color: var(--text); font: inherit;
+  }
+  button {
+    padding: 7px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); color: var(--text); font: inherit; cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-size: 0.85em; color: var(--muted); font-weight: 600; }
+  td.key { font-family: var(--font-mono); font-size: 0.85em; color: var(--muted); }
+  .badge { font-size: 0.8em; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); }
+  .badge.update { color: var(--warn); border-color: var(--warn); }
+  .badge.installed, .badge.done { color: var(--ok); border-color: var(--ok); }
+  .badge.unsupported, .badge.failed { color: var(--danger); border-color: var(--danger); }
+  .banner { padding: 8px 12px; border-radius: var(--radius); border: 1px solid var(--danger); color: var(--danger); display: none; }
+  .banner.show { display: block; }
+  .job { border-top: 1px solid var(--border); padding-top: var(--gap); margin-top: var(--gap); }
+  .job:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+  .item { display: grid; grid-template-columns: 7rem 1fr; gap: 4px 12px; padding: 4px 0; align-items: center; }
+  .item .detail { grid-column: 2; }
+  .item pre { margin: 0; white-space: pre-wrap; font: inherit; color: var(--muted); }
+  progress { width: 100%; height: 10px; accent-color: var(--accent); }
+  details summary { cursor: pointer; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Prismatic</h1>
+      <div class="muted" id="modsDir"></div>
+    </div>
+    <details id="cookieBox">
+      <summary>Nexus cookie: <span id="cookieStatus">checking</span></summary>
+      <p class="muted">Downloads from Nexus Mods need your <code>nexusmods_session</code> cookie. Open nexusmods.com signed in,
+        then in the browser developer tools go to Application (Chrome) or Storage (Firefox), Cookies, and copy its value.
+        It is kept in this browser and sent only to this local program. Treat it like a password.</p>
+      <form class="row grow" id="cookieForm">
+        <input type="password" id="cookieValue" autocomplete="off" placeholder="nexusmods_session value" aria-label="Nexus cookie">
+        <button class="primary" type="submit">Save</button>
+        <button type="button" id="cookieForget">Forget</button>
+      </form>
+    </details>
+  </header>
+
+  <div class="banner" id="error" role="alert"></div>
+
+  <section>
+    <h2>Installed mods</h2>
+    <div class="row grow">
+      <input type="search" id="filter" placeholder="Filter by name or author" aria-label="Filter mods">
+      <button id="check">Check for updates</button>
+      <button id="selectOutdated" disabled>Select outdated</button>
+      <button class="primary" id="updateSelected" disabled>Update selected</button>
+      <button id="updateAll">Update all</button>
+      <button id="exportSelected">Export selected</button>
+    </div>
+    <div class="muted" id="modsSummary"></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th><input type="checkbox" id="selectAll" aria-label="Select all shown mods"></th>
+          <th>Name</th><th>Version</th><th>Update</th><th>Author</th><th>Source</th>
+        </tr></thead>
+        <tbody id="mods"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Add a mod</h2>
+    <form class="row grow" id="addForm">
+      <input type="text" id="addUrl" placeholder="https://www.nexusmods.com/stardewvalley/mods/3109" aria-label="Nexus Mods page URL">
+      <button class="primary" type="submit">Add</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Import a mod list</h2>
+    <p class="muted">Choose a file made with Export (or <code>prismatic export</code>). Mods are installed at their latest version.</p>
+    <div class="row"><input type="file" id="importFile" accept=".json,application/json" aria-label="Mod list file"></div>
+    <div id="importPreview" hidden>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th></th><th>Name</th><th>Version</th><th>Source</th><th></th></tr></thead>
+          <tbody id="importRows"></tbody>
+        </table>
+      </div>
+      <div class="row" style="margin-top: var(--gap)">
+        <button class="primary" id="importGo">Install selected</button>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Activity</h2>
+    <div id="jobs" class="muted">Nothing yet.</div>
+  </section>
+</main>
+
+<script>
+const token = new URLSearchParams(location.search).get('token') || '';
+const state = { mods: [], jobs: [], updates: {}, selected: new Set(), filter: '' };
+let importContent = null;
+let timer = null;
+
+function el(tag, props, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props || {})) {
+    if (key === 'class') node.className = value; else node[key] = value;
+  }
+  for (const child of children) node.append(child);
+  return node;
+}
+const $ = (id) => document.getElementById(id);
+
+function showError(message) {
+  const box = $('error');
+  box.textContent = message || '';
+  box.classList.toggle('show', Boolean(message));
+}
+
+async function api(path, method, body) {
+  const response = await fetch(path, {
+    method: method || 'GET',
+    headers: { 'x-prismatic-token': token, ...(body ? { 'content-type': 'application/json' } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!response.ok) throw new Error((await response.text()) || response.statusText);
+  return response.status === 204 ? null : response.json();
+}
+
+async function guarded(action) {
+  try { showError(''); return await action(); } catch (e) { showError(e.message); }
+}
+
+function formatBytes(n) {
+  return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MiB' : (n / 1024).toFixed(0) + ' KiB';
+}
+
+function visibleMods() {
+  const q = state.filter.trim().toLowerCase();
+  return state.mods.filter((m) => !q || m.name.toLowerCase().includes(q) || (m.author || '').toLowerCase().includes(q));
+}
+
+function renderMods() {
+  const shown = visibleMods();
+  const rows = shown.map((m) => {
+    const box = el('input', { type: 'checkbox', checked: state.selected.has(m.path) });
+    box.setAttribute('aria-label', 'Select ' + m.name);
+    box.addEventListener('change', () => {
+      if (box.checked) state.selected.add(m.path); else state.selected.delete(m.path);
+      renderButtons();
+    });
+    const update = state.updates[m.path];
+    return el('tr', {},
+      el('td', {}, box),
+      el('td', { title: m.description || '' }, m.name, el('div', { class: 'muted' }, m.path)),
+      el('td', {}, m.version || ''),
+      el('td', {}, update ? el('span', { class: 'badge update' }, update) : (m.updatable ? '' : el('span', { class: 'muted' }, 'no source'))),
+      el('td', {}, m.author || ''),
+      el('td', { class: 'key' }, m.keys.join(', ')));
+  });
+  $('mods').replaceChildren(...rows);
+  $('selectAll').checked = shown.length > 0 && shown.every((m) => state.selected.has(m.path));
+  $('modsSummary').textContent = state.mods.length + ' mods installed' + (shown.length !== state.mods.length ? ', ' + shown.length + ' shown' : '');
+  renderButtons();
+}
+
+function renderButtons() {
+  $('updateSelected').disabled = state.selected.size === 0;
+  $('selectOutdated').disabled = Object.keys(state.updates).length === 0;
+  $('exportSelected').textContent = state.selected.size ? 'Export selected (' + state.selected.size + ')' : 'Export all';
+}
+
+function renderJobs() {
+  if (!state.jobs.length) { $('jobs').textContent = 'Nothing yet.'; return; }
+  $('jobs').replaceChildren(...[...state.jobs].reverse().map((job) => {
+    const done = job.items.filter((i) => !['queued', 'running'].includes(i.status)).length;
+    const head = el('strong', {}, job.title + ' ');
+    head.append(el('span', { class: 'muted' }, job.finished ? 'finished' : done + ' of ' + job.items.length));
+    return el('div', { class: 'job' }, head, ...job.items.map((item) => {
+      const detail = el('div', { class: 'detail' });
+      if (item.status === 'running') {
+        if (item.total) detail.append(el('progress', { max: item.total, value: item.downloaded }));
+        detail.append(el('div', { class: 'muted' }, item.stage + (item.total ? ' ' + formatBytes(item.downloaded) + ' of ' + formatBytes(item.total) : '')));
+      }
+      if (item.message) detail.append(el('pre', {}, item.message));
+      return el('div', { class: 'item' },
+        el('span', { class: 'badge ' + item.status }, item.status), el('span', {}, item.label), detail);
+    }));
+  }));
+}
+
+function renderCookie(source) {
+  $('cookieStatus').textContent = source === 'pasted' ? 'saved'
+    : source === 'environment' ? 'from the environment'
+    : 'not set (your browser\'s cookies will be tried)';
+}
+
+let lastModsJson = '';
+async function refresh() {
+  const data = await api('/api/state');
+  $('modsDir').textContent = data.mods_dir;
+  state.jobs = data.jobs;
+  const modsJson = JSON.stringify(data.mods);
+  const changed = modsJson !== lastModsJson;
+  lastModsJson = modsJson;
+  state.mods = data.mods;
+  state.selected = new Set([...state.selected].filter((p) => data.mods.some((m) => m.path === p)));
+  renderCookie(data.cookie);
+  renderJobs();
+  if (changed) { state.updates = {}; renderMods(); }
+  const running = data.jobs.some((j) => !j.finished);
+  if (running && !timer) timer = setInterval(() => guarded(refresh), 700);
+  if (!running && timer) { clearInterval(timer); timer = null; }
+}
+
+async function startJob(path, body) {
+  await guarded(async () => { await api(path, 'POST', body); await refresh(); });
+}
+
+function download(name, text) {
+  const link = el('a', { href: URL.createObjectURL(new Blob([text], { type: 'application/json' })), download: name });
+  document.body.append(link); link.click(); link.remove();
+}
+
+$('filter').addEventListener('input', (e) => { state.filter = e.target.value; renderMods(); });
+$('selectAll').addEventListener('change', (e) => {
+  for (const m of visibleMods()) { if (e.target.checked) state.selected.add(m.path); else state.selected.delete(m.path); }
+  renderMods();
+});
+$('check').addEventListener('click', () => guarded(async () => {
+  $('check').disabled = true; $('check').textContent = 'Checking...';
+  try { state.updates = await api('/api/check', 'POST'); } finally { $('check').disabled = false; $('check').textContent = 'Check for updates'; }
+  renderMods();
+}));
+$('selectOutdated').addEventListener('click', () => { state.selected = new Set(Object.keys(state.updates)); renderMods(); });
+$('updateSelected').addEventListener('click', () => startJob('/api/update', { paths: [...state.selected] }));
+$('updateAll').addEventListener('click', () => startJob('/api/update', { paths: null }));
+$('exportSelected').addEventListener('click', () => guarded(async () => {
+  const result = await api('/api/export', 'POST', { paths: state.selected.size ? [...state.selected] : null });
+  download('prismatic-mods.json', result.content);
+  if (result.skipped.length) showError(result.count + ' mods exported. Skipped (no usable update key): ' + result.skipped.join(', '));
+}));
+$('addForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  await startJob('/api/add', { url: $('addUrl').value });
+  $('addUrl').value = '';
+});
+
+$('cookieForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  guarded(async () => {
+    const value = $('cookieValue').value.trim();
+    await api('/api/cookie', 'POST', { value });
+    try { localStorage.setItem('prismatic.cookie', value); } catch { /* storage may be blocked */ }
+    $('cookieValue').value = '';
+    await refresh();
+  });
+});
+$('cookieForget').addEventListener('click', () => {
+  try { localStorage.removeItem('prismatic.cookie'); } catch { /* storage may be blocked */ }
+  showError('Forgotten in this browser. The running program keeps it until you stop it.');
+});
+
+$('importFile').addEventListener('change', (e) => guarded(async () => {
+  const file = e.target.files[0];
+  if (!file) return;
+  importContent = await file.text();
+  const entries = await api('/api/import/preview', 'POST', { content: importContent });
+  $('importRows').replaceChildren(...entries.map((entry) => {
+    const box = el('input', { type: 'checkbox', checked: entry.state === 'installable', disabled: entry.state !== 'installable' });
+    box.dataset.index = entry.index;
+    box.setAttribute('aria-label', 'Install ' + entry.name);
+    const label = { installed: 'already installed', installable: '', unsupported: 'not installable yet' }[entry.state];
+    return el('tr', {}, el('td', {}, box), el('td', {}, entry.name), el('td', {}, entry.version || ''),
+      el('td', { class: 'key' }, entry.key), el('td', {}, label ? el('span', { class: 'badge ' + entry.state }, label) : ''));
+  }));
+  $('importPreview').hidden = false;
+}));
+$('importGo').addEventListener('click', async () => {
+  const indexes = [...document.querySelectorAll('#importRows input:checked')].map((b) => Number(b.dataset.index));
+  await startJob('/api/import', { content: importContent, indexes });
+  $('importPreview').hidden = true;
+  $('importFile').value = '';
+});
+
+(async () => {
+  await guarded(async () => {
+    let saved = null;
+    try { saved = localStorage.getItem('prismatic.cookie'); } catch { /* storage may be blocked */ }
+    if (saved) await api('/api/cookie', 'POST', { value: saved }).catch(() => {});
+    await refresh();
+  });
+})();
+</script>
+</body>
+</html>
