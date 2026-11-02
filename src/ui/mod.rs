@@ -8,10 +8,12 @@ mod page;
 mod tests;
 
 use std::fmt::Write;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, PoisonError, RwLock};
 use anyhow::{anyhow, bail, Result};
 use axum::routing::{get, post};
 use axum::{middleware, Router};
+use prismatic::nexus::Nexus;
 use prismatic::Manager;
 use tokio::net::TcpListener;
 use jobs::Jobs;
@@ -19,7 +21,12 @@ use jobs::Jobs;
 pub const DEFAULT_PORT: u16 = 47821;
 
 struct AppState {
-    manager: Arc<Manager>,
+    /// `None` until a mods folder is known, the rest of the API refuses to work without one
+    manager: RwLock<Option<Arc<Manager>>>,
+    /// Kept apart from the manager so the pasted cookie survives a change of folder
+    nexus: Arc<Nexus>,
+    /// The folder came from `-d`, which wins over the one the page remembers
+    explicit: bool,
     token: String,
     port: u16,
     jobs: Arc<Jobs>,
@@ -29,6 +36,12 @@ struct AppState {
 
 type Shared = Arc<AppState>;
 
+impl AppState {
+    fn manager(&self) -> Option<Arc<Manager>> {
+        self.manager.read().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+}
+
 fn router(state: Shared) -> Router {
     Router::new()
         .route("/", get(page::page))
@@ -36,6 +49,7 @@ fn router(state: Shared) -> Router {
         .route("/assets/duck.png", get(page::duck))
         .route("/assets/dog.gif", get(page::dog))
         .route("/api/state", get(api::state))
+        .route("/api/folder", post(api::set_folder))
         .route("/api/cookie", post(api::set_cookie).delete(api::forget_cookie))
         .route("/api/cookie/environment", post(api::cookie_from_environment))
         .route("/api/cookie/browser", post(api::cookie_from_browser))
@@ -49,8 +63,18 @@ fn router(state: Shared) -> Router {
         .with_state(state)
 }
 
-fn new_state(manager: Arc<Manager>, port: u16) -> Result<Shared> {
-    Ok(Arc::new(AppState { manager, token: random_token()?, port, jobs: Arc::default(), work: tokio::sync::Mutex::new(()) }))
+fn new_state(mods_dir: Option<PathBuf>, explicit: bool, port: u16) -> Result<Shared> {
+    let nexus = Arc::new(Nexus::new());
+    let manager = mods_dir.map(|dir| Manager::with_nexus(dir, nexus.clone())).transpose()?.map(Arc::new);
+    Ok(Arc::new(AppState {
+        manager: RwLock::new(manager),
+        nexus,
+        explicit,
+        token: random_token()?,
+        port,
+        jobs: Arc::default(),
+        work: tokio::sync::Mutex::new(()),
+    }))
 }
 
 fn random_token() -> Result<String> {
@@ -83,10 +107,11 @@ async fn bind(port: u16) -> Result<TcpListener> {
     }
 }
 
-pub async fn run(manager: Arc<Manager>, port: u16, open: bool) -> Result<()> {
+/// Without a mods folder the page asks for one. `explicit` is a folder given on the command line.
+pub async fn run(mods_dir: Option<PathBuf>, explicit: bool, port: u16, open: bool) -> Result<()> {
     let listener = bind(port).await?;
     let port = listener.local_addr()?.port();
-    let state = new_state(manager, port)?;
+    let state = new_state(mods_dir, explicit, port)?;
     let url = format!("http://127.0.0.1:{port}/?token={}", state.token);
     println!("Prismatic is running at {url}\nPress Ctrl+C to stop.");
     if open {

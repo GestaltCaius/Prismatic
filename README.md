@@ -44,6 +44,10 @@ and updating one of them replaces the whole pack folder.
 Running `prismatic` with no command (or double-clicking it on Windows) starts a small server on your own machine and opens
 it in your browser. It can list installed mods, check for and install updates, add a mod from a Nexus page, and export or
 import mod lists, with the same checks the commands use. Authors link to their Nexus profile. Paste your Nexus cookie once in the page, it is kept in your browser.
+If no mods folder is found the page asks for one, and the "Mods folder" panel can change it at any time (not while a job
+runs). Type the full path, `~` stands for your home folder. The choice is remembered in the browser and used the next
+time, unless the program is started with `-d`, which always wins. Note that the page can then install into any existing
+folder you give it, like the commands can with `-d`.
 Add `-d <dir>` before `ui` for a non-default mods directory, `--port <n>` to change the port (47821 by default,
 a free one is used if it is taken) and `--no-open` to only print the address.
 

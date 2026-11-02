@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use anyhow::{anyhow, bail, Result};
 use bytes::Bytes;
 use crate::manifest::{is_nexus_id, locate_mods, locate_mods_at, Mod, Scan, UpdateKey, UpdateKeys};
@@ -48,7 +48,7 @@ impl Added {
 pub struct Manager {
     mods_dir: PathBuf,
     http: wreq::Client,
-    nexus: Nexus,
+    nexus: Arc<Nexus>,
     /// Nexus ids SMAPI's database knows, by lowercase `UniqueID`. `None` is a mod it doesn't know.
     known_ids: Mutex<HashMap<String, Option<String>>>,
 }
@@ -90,17 +90,22 @@ fn inherit_pack_keys(mods: &mut [Mod], mods_dir: &Path) {
 
 impl Manager {
     pub fn new(mods_dir: PathBuf) -> Result<Self> {
+        Self::with_nexus(mods_dir, Arc::new(Nexus::new()))
+    }
+
+    /// Like `new`, sharing the Nexus session (the pasted cookie) with other managers
+    pub fn with_nexus(mods_dir: PathBuf, nexus: Arc<Nexus>) -> Result<Self> {
         if !mods_dir.is_dir() {
             bail!("Invalid mods directory");
         }
-        Ok(Self { mods_dir, http: http::client()?, nexus: Nexus::new(), known_ids: Mutex::default() })
+        Ok(Self { mods_dir, http: http::client()?, nexus, known_ids: Mutex::default() })
     }
 
     pub fn mods_dir(&self) -> &Path {
         &self.mods_dir
     }
 
-    pub const fn nexus(&self) -> &Nexus {
+    pub fn nexus(&self) -> &Nexus {
         &self.nexus
     }
 

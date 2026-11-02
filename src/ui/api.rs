@@ -1,11 +1,15 @@
 //! The JSON API the page talks to.
 
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Arc, PoisonError};
 use anyhow::anyhow;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
 use prismatic::manager::{Added, UpdateResult, Verdict};
+use prismatic::paths::{default_candidates, default_mods_dir, expand_home};
+use prismatic::Manager;
 use prismatic::manifest::{Mod, UpdateKeys};
 use prismatic::modlist::{installable, is_installed, list_json, parse_list};
 use prismatic::nexus::{mod_id_from_url, Nexus};
@@ -27,6 +31,21 @@ fn server_error(e: &anyhow::Error) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
+/// The manager, or a message asking for a mods folder first
+fn manager(state: &Shared) -> ApiResult<Arc<Manager>> {
+    state.manager().ok_or_else(|| bad_request("Choose a mods folder first"))
+}
+
+fn has_control_chars(value: &str) -> bool {
+    value.chars().any(char::is_control)
+}
+
+#[derive(Serialize)]
+pub struct Candidate {
+    path: String,
+    found: bool,
+}
+
 #[derive(Serialize)]
 pub struct ModInfo {
     path: String,
@@ -42,7 +61,12 @@ pub struct ModInfo {
 
 #[derive(Serialize)]
 pub struct StateResponse {
-    mods_dir: String,
+    /// `None` until a folder is chosen
+    mods_dir: Option<String>,
+    /// The folder was given on the command line, so a folder the page remembers must not replace it
+    explicit: bool,
+    /// Usual places for the mods folder on this system
+    candidates: Vec<Candidate>,
     mods: Vec<ModInfo>,
     jobs: Vec<Job>,
     /// Manifests that couldn't be read, their mods are missing from `mods`
@@ -52,13 +76,24 @@ pub struct StateResponse {
 }
 
 pub async fn state(State(state): State<Shared>) -> ApiResult<Json<StateResponse>> {
-    let mods_dir = state.manager.mods_dir();
-    let scan = state.manager.scan().await.map_err(|e| server_error(&e))?;
+    let candidates = default_candidates().into_iter().map(|path| Candidate { found: path.is_dir(), path: path.display().to_string() }).collect();
+    let Some(manager) = state.manager() else {
+        return Ok(Json(StateResponse {
+            mods_dir: None,
+            explicit: state.explicit,
+            candidates,
+            mods: Vec::new(),
+            jobs: state.jobs.snapshot(),
+            warnings: Vec::new(),
+            cookie: state.nexus.cookie_source(),
+        }));
+    };
+    let mods_dir = manager.mods_dir();
+    let scan = manager.scan().await.map_err(|e| server_error(&e))?;
     // The lookup is cached and runs on in the background when SMAPI is slow, so the page is never held up
     // for long and a later poll finds the answer
-    let manager = state.manager.clone();
     let lookup = tokio::spawn({
-        let mods = scan.mods.clone();
+        let (manager, mods) = (manager.clone(), scan.mods.clone());
         async move { manager.resolve_sources(mods).await }
     });
     let found = tokio::time::timeout(SOURCE_LOOKUP, lookup).await.ok().and_then(Result::ok);
@@ -74,12 +109,38 @@ pub async fn state(State(state): State<Shared>) -> ApiResult<Json<StateResponse>
     }).collect();
     mods.sort_by_key(|m| m.name.to_lowercase());
     Ok(Json(StateResponse {
-        mods_dir: mods_dir.display().to_string(),
+        mods_dir: Some(mods_dir.display().to_string()),
+        explicit: state.explicit,
+        candidates,
         mods,
         jobs: state.jobs.snapshot(),
         warnings: scan.errors,
-        cookie: state.manager.nexus().cookie_source(),
+        cookie: state.nexus.cookie_source(),
     }))
+}
+
+#[derive(Deserialize)]
+pub struct FolderRequest {
+    /// `None` or empty goes back to the usual place for this system
+    path: Option<String>,
+}
+
+/// Points the app at another mods folder. Refused while a job runs, since jobs work in the current one.
+pub async fn set_folder(State(state): State<Shared>, Json(request): Json<FolderRequest>) -> ApiResult<StatusCode> {
+    let Ok(_idle) = state.work.try_lock() else {
+        return Err((StatusCode::CONFLICT, "Wait for the running job to finish before changing the folder".to_string()));
+    };
+    let dir = match request.path.as_deref().map(str::trim).filter(|path| !path.is_empty()) {
+        None => default_mods_dir().map_err(|e| bad_request(&e.to_string()))?,
+        Some(path) if path.len() > 4096 || has_control_chars(path) => return Err(bad_request("That doesn't look like a folder path")),
+        Some(path) => expand_home(path),
+    };
+    if !Path::new(&dir).is_dir() {
+        return Err(bad_request(&format!("{} is not a folder", dir.display())));
+    }
+    let manager = Manager::with_nexus(dir, state.nexus.clone()).map_err(|e| bad_request(&e.to_string()))?;
+    *state.manager.write().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(manager));
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -89,10 +150,10 @@ pub struct CookieRequest {
 
 pub async fn set_cookie(State(state): State<Shared>, Json(request): Json<CookieRequest>) -> ApiResult<StatusCode> {
     let value = request.value.trim();
-    if value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control) {
+    if value.is_empty() || value.len() > 4096 || has_control_chars(value) {
         return Err(bad_request("That doesn't look like a cookie value"));
     }
-    state.manager.nexus().set_cookie(value);
+    state.nexus.set_cookie(value);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -114,16 +175,16 @@ pub async fn cookie_from_browser() -> ApiResult<Json<CookieValue>> {
 }
 
 pub async fn forget_cookie(State(state): State<Shared>) -> StatusCode {
-    state.manager.nexus().clear_cookie();
+    state.nexus.clear_cookie();
     StatusCode::NO_CONTENT
 }
 
 /// Mods whose path is in `paths`, or all of them when `paths` is `None`
-async fn select_mods(state: &Shared, paths: Option<&[String]>) -> ApiResult<Vec<Mod>> {
-    let mods = state.manager.mods().await.map_err(|e| server_error(&e))?;
-    let mods = state.manager.resolve_sources(mods).await;
+async fn select_mods(manager: &Manager, paths: Option<&[String]>) -> ApiResult<Vec<Mod>> {
+    let mods = manager.mods().await.map_err(|e| server_error(&e))?;
+    let mods = manager.resolve_sources(mods).await;
     Ok(mods.into_iter()
-        .filter(|m| paths.is_none_or(|paths| paths.contains(&m.relative(state.manager.mods_dir()))))
+        .filter(|m| paths.is_none_or(|paths| paths.contains(&m.relative(manager.mods_dir()))))
         .collect())
 }
 
@@ -134,20 +195,21 @@ pub struct PathsRequest {
 
 /// Newest SMAPI-suggested version per mod path, only for mods that have one
 pub async fn check(State(state): State<Shared>) -> ApiResult<Json<HashMap<String, String>>> {
-    let mods = select_mods(&state, None).await?;
-    let versions = state.manager.suggested_versions(&mods).await.map_err(|e| server_error(&e))?;
+    let manager = manager(&state)?;
+    let mods = select_mods(&manager, None).await?;
+    let versions = manager.suggested_versions(&mods).await.map_err(|e| server_error(&e))?;
     Ok(Json(mods.iter().zip(versions)
-        .filter_map(|(m, version)| Some((m.relative(state.manager.mods_dir()), version?)))
+        .filter_map(|(m, version)| Some((m.relative(manager.mods_dir()), version?)))
         .collect()))
 }
 
 /// Lines and warnings of an install, as one message for its item
-fn describe(state: &Shared, added: &Added) -> String {
-    added.lines(state.manager.mods_dir()).into_iter().chain(added.warnings.iter().cloned()).collect::<Vec<_>>().join("\n")
+fn describe(manager: &Manager, added: &Added) -> String {
+    added.lines(manager.mods_dir()).into_iter().chain(added.warnings.iter().cloned()).collect::<Vec<_>>().join("\n")
 }
 
-async fn run_update(state: &Shared, job: usize, mods: &[Mod]) {
-    let verdicts = match state.manager.verdicts(mods, false).await {
+async fn run_update(state: &Shared, manager: &Manager, job: usize, mods: &[Mod]) {
+    let verdicts = match manager.verdicts(mods, false).await {
         Ok(verdicts) => verdicts,
         Err(e) => {
             for index in 0..mods.len() {
@@ -161,7 +223,7 @@ async fn run_update(state: &Shared, job: usize, mods: &[Mod]) {
         match verdict {
             Verdict::Update => {
                 let progress = state.jobs.progress(job, index);
-                match state.manager.update_mod(m, false, &progress).await {
+                match manager.update_mod(m, false, &progress).await {
                     UpdateResult::Success { new_version } => {
                         let message = m.manifest.version.as_ref().map_or_else(|| new_version.clone(), |old| format!("{old} -> {new_version}"));
                         state.jobs.finish(job, index, Status::Done, message);
@@ -178,14 +240,15 @@ async fn run_update(state: &Shared, job: usize, mods: &[Mod]) {
 }
 
 pub async fn update(State(state): State<Shared>, Json(request): Json<PathsRequest>) -> ApiResult<Json<usize>> {
-    let mods = select_mods(&state, request.paths.as_deref()).await?;
+    let manager = manager(&state)?;
+    let mods = select_mods(&manager, request.paths.as_deref()).await?;
     if mods.is_empty() {
         return Err(bad_request("No mods selected"));
     }
-    let job = state.jobs.start("Update mods", mods.iter().map(|m| m.display_name(state.manager.mods_dir())).collect());
+    let job = state.jobs.start("Update mods", mods.iter().map(|m| m.display_name(manager.mods_dir())).collect());
     tokio::spawn(async move {
         let _turn = state.work.lock().await;
-        run_update(&state, job, &mods).await;
+        run_update(&state, &manager, job, &mods).await;
         state.jobs.complete(job);
     });
     Ok(Json(job))
@@ -197,6 +260,7 @@ pub struct AddRequest {
 }
 
 pub async fn add(State(state): State<Shared>, Json(request): Json<AddRequest>) -> ApiResult<Json<usize>> {
+    let manager = manager(&state)?;
     let id = mod_id_from_url(request.url.trim())
         .ok_or_else(|| bad_request("Expected a URL like https://www.nexusmods.com/stardewvalley/mods/<id>"))?
         .to_string();
@@ -205,9 +269,9 @@ pub async fn add(State(state): State<Shared>, Json(request): Json<AddRequest>) -
         let _turn = state.work.lock().await;
         state.jobs.running(job, 0);
         let progress = state.jobs.progress(job, 0);
-        let result = state.manager.add_nexus(&id, &progress).await;
+        let result = manager.add_nexus(&id, &progress).await;
         progress.emit(Event::Done);
-        state.jobs.finish_with(job, 0, result.map(|added| describe(&state, &added)));
+        state.jobs.finish_with(job, 0, result.map(|added| describe(&manager, &added)));
         state.jobs.complete(job);
     });
     Ok(Json(job))
@@ -221,8 +285,9 @@ pub struct ExportResponse {
 }
 
 pub async fn export(State(state): State<Shared>, Json(request): Json<PathsRequest>) -> ApiResult<Json<ExportResponse>> {
-    let mods = select_mods(&state, request.paths.as_deref()).await?;
-    let collected = state.manager.collect_entries(&mods).await;
+    let manager = manager(&state)?;
+    let mods = select_mods(&manager, request.paths.as_deref()).await?;
+    let collected = manager.collect_entries(&mods).await;
     if let Some(error) = &collected.lookup_error {
         eprintln!("Couldn't look up missing Nexus ids on SMAPI: {error}");
     }
@@ -254,7 +319,7 @@ pub struct PreviewEntry {
 
 pub async fn import_preview(State(state): State<Shared>, Json(request): Json<ImportPreviewRequest>) -> ApiResult<Json<Vec<PreviewEntry>>> {
     let entries = parse_list(&request.content).map_err(|e| bad_request(&format!("Not a Prismatic mod list: {e}")))?;
-    let mods = state.manager.mods().await.map_err(|e| server_error(&e))?;
+    let mods = manager(&state)?.mods().await.map_err(|e| server_error(&e))?;
     Ok(Json(entries.iter().enumerate().map(|(index, entry)| PreviewEntry {
         index,
         name: entry.name.clone().unwrap_or_else(|| "Unnamed mod".into()),
@@ -282,12 +347,13 @@ pub async fn import(State(state): State<Shared>, Json(request): Json<ImportReque
     if chosen.is_empty() {
         return Err(bad_request("No mods selected"));
     }
+    let manager = manager(&state)?;
     let job = state.jobs.start("Import mods", chosen.iter().map(|entry| entry.name.clone().unwrap_or_else(|| "Unnamed mod".into())).collect());
     tokio::spawn(async move {
         let _turn = state.work.lock().await;
         for (index, entry) in chosen.iter().enumerate() {
             state.jobs.running(job, index);
-            let mods = match state.manager.mods().await {
+            let mods = match manager.mods().await {
                 Ok(mods) => mods,
                 Err(e) => {
                     state.jobs.finish(job, index, Status::Failed, e.to_string());
@@ -299,9 +365,9 @@ pub async fn import(State(state): State<Shared>, Json(request): Json<ImportReque
                 continue;
             }
             let progress = state.jobs.progress(job, index);
-            let result = state.manager.install_entry(entry, &progress).await;
+            let result = manager.install_entry(entry, &progress).await;
             progress.emit(Event::Done);
-            state.jobs.finish_with(job, index, result.map(|added| describe(&state, &added)));
+            state.jobs.finish_with(job, index, result.map(|added| describe(&manager, &added)));
         }
         state.jobs.complete(job);
     });

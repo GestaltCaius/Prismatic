@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 use super::guard::TOKEN_HEADER;
-use super::{bind, new_state, random_token, router};
-use prismatic::Manager;
-use std::sync::Arc;
+use super::{bind, new_state, random_token, router, Shared};
 
 #[test]
 fn tokens_are_long_and_different() {
@@ -11,16 +9,32 @@ fn tokens_are_long_and_different() {
     assert_ne!(a, b);
 }
 
-/// Starts the real server on a free port with a mods folder holding one mod
-async fn serve() -> (u16, String, PathBuf) {
+fn mods_folder(manifest: Option<(&str, &str)>) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("prismatic-ui-test-{}", random_token().unwrap()));
-    std::fs::create_dir_all(dir.join("Fake")).unwrap();
-    std::fs::write(dir.join("Fake/manifest.json"), r#"{"Name":"Fake","Version":"1.0","UniqueID":"x.fake","UpdateKeys":["Nexus:1"]}"#).unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    if let Some((folder, text)) = manifest {
+        std::fs::create_dir_all(dir.join(folder)).unwrap();
+        std::fs::write(dir.join(folder).join("manifest.json"), text).unwrap();
+    }
+    dir
+}
+
+const FAKE: (&str, &str) = ("Fake", r#"{"Name":"Fake","Version":"1.0","UniqueID":"x.fake","UpdateKeys":["Nexus:1"]}"#);
+
+/// Starts the real server on a free port, `dir` is the mods folder it starts with, if any
+async fn serve_in(dir: Option<PathBuf>, explicit: bool) -> (u16, String, Shared) {
     let listener = bind(0).await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let state = new_state(Arc::new(Manager::new(dir.clone()).unwrap()), port).unwrap();
-    let token = state.token.clone();
+    let state = new_state(dir, explicit, port).unwrap();
+    let (token, shared) = (state.token.clone(), state.clone());
     tokio::spawn(async move { axum::serve(listener, router(state)).await.unwrap() });
+    (port, token, shared)
+}
+
+/// The real server with a mods folder holding one mod
+async fn serve() -> (u16, String, PathBuf) {
+    let dir = mods_folder(Some(FAKE));
+    let (port, token, _state) = serve_in(Some(dir.clone()), false).await;
     (port, token, dir)
 }
 
@@ -201,4 +215,72 @@ async fn updates_an_outdated_mod_through_the_api() {
     let item = &job["items"][0];
     assert_eq!(item["status"], "done", "{item}");
     assert!(item["message"].as_str().unwrap().starts_with("0.0.1 -> "));
+}
+
+async fn set_folder(base: &str, token: &str, path: serde_json::Value) -> (u16, String) {
+    post(base, token, "/api/folder", serde_json::json!({ "path": path })).await
+}
+
+#[tokio::test]
+async fn without_a_folder_the_page_is_asked_to_choose_one() {
+    let (port, token, _state) = serve_in(None, false).await;
+    let base = format!("http://127.0.0.1:{port}");
+
+    let before = state(&base, &token).await;
+    assert!(before["mods_dir"].is_null());
+    assert_eq!(before["mods"].as_array().unwrap().len(), 0);
+    assert!(before["candidates"].is_array());
+    assert_eq!(post(&base, &token, "/api/check", serde_json::json!({})).await.0, 400);
+    assert_eq!(post(&base, &token, "/api/add", serde_json::json!({"url": "https://www.nexusmods.com/stardewvalley/mods/1"})).await.0, 400);
+
+    let dir = mods_folder(Some(FAKE));
+    assert_eq!(set_folder(&base, &token, dir.to_str().unwrap().into()).await.0, 204);
+
+    let after = state(&base, &token).await;
+    assert_eq!(after["mods_dir"], dir.to_str().unwrap());
+    assert_eq!(after["mods"][0]["name"], "Fake");
+}
+
+#[tokio::test]
+async fn the_folder_can_be_switched_and_the_new_one_is_listed() {
+    let (port, token, _dir) = serve().await;
+    let base = format!("http://127.0.0.1:{port}");
+    let other = mods_folder(Some(("Other", r#"{"Name":"Other"}"#)));
+
+    assert_eq!(set_folder(&base, &token, other.to_str().unwrap().into()).await.0, 204);
+
+    let mods = state(&base, &token).await["mods"].clone();
+    assert_eq!((mods.as_array().unwrap().len(), mods[0]["name"].as_str()), (1, Some("Other")));
+}
+
+#[tokio::test]
+async fn only_existing_folders_are_accepted() {
+    let (port, token, dir) = serve().await;
+    let base = format!("http://127.0.0.1:{port}");
+
+    let missing = dir.join("nope");
+    let (status, message) = set_folder(&base, &token, missing.to_str().unwrap().into()).await;
+    assert_eq!(status, 400);
+    assert!(message.contains("is not a folder"), "{message}");
+    let file = dir.join("Fake/manifest.json");
+    assert_eq!(set_folder(&base, &token, file.to_str().unwrap().into()).await.0, 400, "a file is not a folder");
+    assert_eq!(set_folder(&base, &token, "bad\npath".into()).await.0, 400);
+    assert_eq!(state(&base, &token).await["mods"][0]["name"], "Fake", "a refused folder changes nothing");
+}
+
+#[tokio::test]
+async fn the_folder_is_not_changed_while_a_job_runs_and_the_cookie_survives_a_change() {
+    let (port, token, state_) = serve_in(Some(mods_folder(Some(FAKE))), true).await;
+    let base = format!("http://127.0.0.1:{port}");
+    assert_eq!(post(&base, &token, "/api/cookie", serde_json::json!({"value": "pasted-value"})).await.0, 204);
+    let other = mods_folder(None);
+
+    let busy = state_.work.lock().await;
+    assert_eq!(set_folder(&base, &token, other.to_str().unwrap().into()).await.0, 409);
+    drop(busy);
+    assert_eq!(set_folder(&base, &token, other.to_str().unwrap().into()).await.0, 204);
+
+    let after = state(&base, &token).await;
+    assert_eq!(after["cookie"], "pasted");
+    assert_eq!(after["explicit"], true);
 }

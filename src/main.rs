@@ -86,15 +86,23 @@ async fn main() -> ExitCode {
 /// Exit code: 0 on success, 1 on any error or when an update or import left something undone
 async fn main_inner() -> Result<ExitCode> {
     let args = Args::parse();
+    let command = args.command.unwrap_or(Command::Ui { port: DEFAULT_PORT, no_open: false });
+    if let Command::Ui { port, no_open } = command {
+        // The page can ask for the folder, so not finding one is no reason to stop
+        let explicit = args.mods_dir.is_some();
+        let mods_dir = args.mods_dir.or_else(|| paths::default_mods_dir().ok());
+        ui::run(mods_dir, explicit, port, !no_open).await?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let mods_dir = args.mods_dir.map_or_else(paths::default_mods_dir, Ok)?;
     let manager = Arc::new(Manager::new(mods_dir)?);
-    match args.command.unwrap_or(Command::Ui { port: DEFAULT_PORT, no_open: false }) {
+    match command {
         Command::Import { file, all } => return cli::import(&manager, &file, all).await,
         Command::Update { force } => return cli::update(&manager, force).await,
         Command::Add { source } => cli::add(&manager, &source).await?,
         Command::List => cli::list(&manager).await?,
         Command::Export { file, all } => cli::export(&manager, &file, all).await?,
-        Command::Ui { port, no_open } => ui::run(manager, port, !no_open).await?,
+        Command::Ui { .. } => unreachable!("handled above"),
     }
     Ok(ExitCode::SUCCESS)
 }
