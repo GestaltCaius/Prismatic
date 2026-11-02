@@ -31,7 +31,10 @@ proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
 # Tuned for `cargo install --git`: smallest, fastest binary, at the cost of build time.
 # `cargo build` (dev profile) is unaffected.
 [profile.release]
-opt-level = 3     # default for release; stated explicitly so it is not silently changed
+# Size over speed: the work is network and disk bound. Measured on aarch64-apple-darwin:
+# opt-level 3 gives 9.0 MB, "s" 7.1 MB, "s" with abort 6.2 MB, "z" with abort 5.5 MB.
+opt-level = "z"
+panic = "abort"   # a panic ends the program instead of unwinding, which also drops the unwinding code
 lto = "fat"       # optimise across crate boundaries, slowest to link
 codegen-units = 1 # let LLVM see the whole crate
 strip = "symbols" # drop debug symbols from the shipped binary
