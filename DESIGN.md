@@ -136,6 +136,8 @@ Flat. Hierarchy comes from borders and tonal layers (neutral page, surface panel
 - **Mod rows:** the whole row toggles its checkbox (links and controls excepted). The checkbox stays the real control for keyboard and screen readers. Hover shows a 4px wood bar on the left edge, a selected row a green one, so no new text and background pairs are introduced. Nexus and GitHub update keys are links in the muted text color, underlined. Authors link to their Nexus profile.
 - **Inputs:** neutral fill, 1px wood border, always with an `aria-label`.
 - **Badges:** outlined pills colored by state (success, warning, error).
+- **Tabs:** the Mods and Settings buttons sit at the right of the top bar, the current one in primary green. Each tab is a page of panels, the layout does not change between them.
+- **Notes:** small muted text under a mod name, collapsed into a `details` line such as "Required by 3 mods" that lists the names when opened. A note that points at a problem (the mod needs a disabled mod, or is off while enabled mods need it) uses the warning color.
 - **Focus:** a 3px on-surface outline on every focusable element.
 
 ## Do's and Don'ts

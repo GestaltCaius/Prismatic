@@ -24,12 +24,22 @@
     --font-mono: ui-monospace, "SF Mono", Consolas, monospace;
   }
   * { box-sizing: border-box; }
+  html { scrollbar-gutter: stable; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 var(--font); }
-  main { max-width: 1000px; margin: 0 auto; padding: 16px; display: grid; gap: var(--gap); }
+  main { max-width: 1000px; margin: 0 auto; padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--gap); }
   h1 { margin: 0; font-size: 1.5rem; }
   h2 { margin: 0 0 var(--gap); font-size: 1.1rem; }
   section, header { background: var(--surface); border: 2px solid var(--border); border-radius: var(--radius); padding: 16px; }
-  header { display: flex; flex-wrap: wrap; gap: var(--gap); justify-content: space-between; align-items: flex-start; }
+  header { display: flex; flex-wrap: wrap; gap: var(--gap) 24px; align-items: center; padding: 10px 16px; }
+  .page { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--gap); }
+  .page[hidden] { display: none; }
+  .tabs { display: flex; gap: 6px; margin-left: auto; }
+  .tabs button[aria-current=page] { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
+  summary { cursor: pointer; }
+  .note { font-size: 0.85em; color: var(--muted); }
+  .note.warn { color: var(--warn); }
+  .note ul { margin: 2px 0 0; padding-left: 18px; }
+  @media (max-width: 560px) { .subtitle { display: none; } }
   .muted { color: var(--muted); font-size: 0.9em; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: var(--gap); }
   .row.grow input[type=text], .row.grow input[type=search], .row.grow input[type=password] { flex: 1 1 260px; }
@@ -41,8 +51,8 @@
     padding: 7px 12px; border: 1px solid var(--border); border-radius: var(--radius);
     background: var(--surface); color: var(--text); font: inherit; cursor: pointer;
   }
-  .brand { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
-  .brand img, .idle img { image-rendering: pixelated; }
+  .brand { display: flex; gap: 12px; align-items: center; }
+  .idle img { image-rendering: pixelated; }
   .idle { display: flex; align-items: center; gap: 12px; }
   ::placeholder { color: var(--muted); opacity: 1; }
   :focus-visible { outline: 3px solid var(--text); outline-offset: 2px; }
@@ -76,101 +86,115 @@
 <main>
   <header>
     <div class="brand">
-      <img src="/assets/logo.png" width="228" height="104" alt="Stardew Valley logo">
+      <img src="/assets/logo.png" width="96" height="44" alt="Stardew Valley logo">
       <div>
         <h1>Prismatic</h1>
-        <div class="muted" id="modsDir"></div>
+        <div class="muted subtitle">Stardew Valley Mod Manager</div>
       </div>
     </div>
+    <nav class="tabs" aria-label="Sections">
+      <button type="button" data-page="mods">Mods</button>
+      <button type="button" data-page="settings">Settings</button>
+    </nav>
   </header>
 
   <div class="banner" id="error" role="alert"></div>
   <div class="banner" id="warnings" aria-live="polite"></div>
 
-  <section>
-    <h2>Mods folder</h2>
-    <div id="folderStatus" aria-live="polite"></div>
-    <p class="muted">The <code>Mods</code> folder inside your Stardew Valley folder. Pick one of the usual places or type the full path.
-      It is remembered in this browser, unless the program was started with <code>-d</code>, which always wins.</p>
-    <form class="row grow" id="folderForm">
-      <input type="text" id="folderValue" list="folderChoices" autocomplete="off" placeholder="/path/to/Stardew Valley/Mods" aria-label="Mods folder">
-      <datalist id="folderChoices"></datalist>
-      <button class="primary" type="submit">Use this folder</button>
-      <button type="button" id="folderDefault">Use the usual one</button>
-    </form>
-  </section>
+  <div class="page" id="page-mods">
+    <section id="noFolder" hidden>
+      <p>Prismatic needs your Stardew Valley <code>Mods</code> folder first.</p>
+      <button class="primary" type="button" data-page="settings">Open Settings</button>
+    </section>
 
-  <section>
-    <h2>Nexus cookie</h2>
-    <div id="cookieStatus" aria-live="polite">checking</div>
-    <p class="muted">Downloads from Nexus Mods need your <code>nexusmods_session</code> cookie. Prismatic tries the NEXUS_COOKIE variable, then your browser's cookies.
-      To use another one, open nexusmods.com signed in, then in the browser developer tools go to Application (Chrome) or Storage (Firefox), Cookies, and copy its value.
-      A pasted cookie wins over the automatic ones until you forget it. It is kept in this browser and sent only to this local program. Treat it like a password.</p>
-    <form class="row grow" id="cookieForm">
-      <input type="password" id="cookieValue" autocomplete="off" placeholder="nexusmods_session value" aria-label="Nexus cookie">
-      <button class="primary" type="submit">Use this cookie</button>
-      <button type="button" id="cookieForget" disabled>Forget pasted cookie</button>
-    </form>
-    <div class="row">
-      <span class="muted">Fill the field from:</span>
-      <button type="button" data-fill="environment">the NEXUS_COOKIE variable</button>
-      <button type="button" data-fill="browser">your browser's cookies</button>
-    </div>
-  </section>
-
-  <section data-needs-folder>
-    <h2>Installed mods</h2>
-    <div class="row grow">
-      <input type="search" id="filter" placeholder="Filter by name or author" aria-label="Filter mods">
-      <button id="check">Check for updates</button>
-      <button id="selectOutdated" disabled>Select outdated</button>
-      <button class="primary" id="updateSelected" disabled>Update selected</button>
-      <button id="updateAll">Update all</button>
-      <button id="disableSelected" disabled>Disable selected</button>
-      <button id="enableSelected" disabled>Enable selected</button>
-      <button id="exportSelected">Export selected</button>
-    </div>
-    <div class="muted" id="modsSummary"></div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr>
-          <th><input type="checkbox" id="selectAll" aria-label="Select all shown mods"></th>
-          <th>Name</th><th>Version</th><th>Update</th><th>Author</th><th>Source</th>
-        </tr></thead>
-        <tbody id="mods"></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section data-needs-folder>
-    <h2>Add a mod</h2>
-    <form class="row grow" id="addForm">
-      <input type="text" id="addUrl" placeholder="https://www.nexusmods.com/stardewvalley/mods/3109" aria-label="Nexus Mods page URL">
-      <button class="primary" type="submit">Add</button>
-    </form>
-  </section>
-
-  <section data-needs-folder>
-    <h2>Import a mod list</h2>
-    <p class="muted">Choose a file made with Export (or <code>prismatic export</code>). Mods are installed at their latest version.</p>
-    <div class="row"><input type="file" id="importFile" accept=".json,application/json" aria-label="Mod list file"></div>
-    <div id="importPreview" hidden>
+    <section data-needs-folder>
+      <h2>Installed mods</h2>
+      <div class="row grow">
+        <input type="search" id="filter" placeholder="Filter by name or author" aria-label="Filter mods">
+        <button id="check">Check for updates</button>
+        <button id="selectOutdated" disabled>Select outdated</button>
+        <button class="primary" id="updateSelected" disabled>Update selected</button>
+        <button id="updateAll">Update all</button>
+        <button id="disableSelected" disabled>Disable selected</button>
+        <button id="enableSelected" disabled>Enable selected</button>
+        <button id="exportSelected">Export selected</button>
+      </div>
+      <div class="muted" id="modsSummary"></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th></th><th>Name</th><th>Version</th><th>Source</th><th></th></tr></thead>
-          <tbody id="importRows"></tbody>
+          <thead><tr>
+            <th><input type="checkbox" id="selectAll" aria-label="Select all shown mods"></th>
+            <th>Name</th><th>Version</th><th>Update</th><th>Author</th><th>Source</th>
+          </tr></thead>
+          <tbody id="mods"></tbody>
         </table>
       </div>
-      <div class="row" style="margin-top: var(--gap)">
-        <button class="primary" id="importGo">Install selected</button>
-      </div>
-    </div>
-  </section>
+    </section>
 
-  <section data-needs-folder>
-    <h2>Activity</h2>
-    <div id="jobs" class="muted">Nothing yet.</div>
-  </section>
+    <section data-needs-folder>
+      <h2>Add a mod</h2>
+      <form class="row grow" id="addForm">
+        <input type="text" id="addUrl" placeholder="https://www.nexusmods.com/stardewvalley/mods/3109" aria-label="Nexus Mods page URL">
+        <button class="primary" type="submit">Add</button>
+      </form>
+    </section>
+
+    <section data-needs-folder>
+      <h2>Import a mod list</h2>
+      <p class="muted">Choose a file made with Export (or <code>prismatic export</code>). Mods are installed at their latest version.</p>
+      <div class="row"><input type="file" id="importFile" accept=".json,application/json" aria-label="Mod list file"></div>
+      <div id="importPreview" hidden>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th></th><th>Name</th><th>Version</th><th>Source</th><th></th></tr></thead>
+            <tbody id="importRows"></tbody>
+          </table>
+        </div>
+        <div class="row" style="margin-top: var(--gap)">
+          <button class="primary" id="importGo">Install selected</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="activity">
+      <h2>Activity</h2>
+      <div id="jobs" class="muted">Nothing yet.</div>
+    </section>
+  </div>
+
+  <div class="page" id="page-settings" hidden>
+    <section>
+      <h2>Mods folder</h2>
+      <div id="folderStatus" aria-live="polite"></div>
+      <div class="muted" id="modsDir"></div>
+      <p class="muted">The <code>Mods</code> folder inside your Stardew Valley folder. Pick one of the usual places or type the full path.
+        It is remembered in this browser, unless the program was started with <code>-d</code>, which always wins.</p>
+      <form class="row grow" id="folderForm">
+        <input type="text" id="folderValue" list="folderChoices" autocomplete="off" placeholder="/path/to/Stardew Valley/Mods" aria-label="Mods folder">
+        <datalist id="folderChoices"></datalist>
+        <button class="primary" type="submit">Use this folder</button>
+        <button type="button" id="folderDefault">Use the usual one</button>
+      </form>
+    </section>
+
+    <section>
+      <h2>Nexus cookie</h2>
+      <div id="cookieStatus" aria-live="polite">checking</div>
+      <p class="muted">Downloads from Nexus Mods need your <code>nexusmods_session</code> cookie. Prismatic tries the NEXUS_COOKIE variable, then your browser's cookies.
+        To use another one, open nexusmods.com signed in, then in the browser developer tools go to Application (Chrome) or Storage (Firefox), Cookies, and copy its value.
+        A pasted cookie wins over the automatic ones until you forget it. It is kept in this browser and sent only to this local program. Treat it like a password.</p>
+      <form class="row grow" id="cookieForm">
+        <input type="password" id="cookieValue" autocomplete="off" placeholder="nexusmods_session value" aria-label="Nexus cookie">
+        <button class="primary" type="submit">Use this cookie</button>
+        <button type="button" id="cookieForget" disabled>Forget pasted cookie</button>
+      </form>
+      <div class="row">
+        <span class="muted">Fill the field from:</span>
+        <button type="button" data-fill="environment">the NEXUS_COOKIE variable</button>
+        <button type="button" data-fill="browser">your browser's cookies</button>
+      </div>
+    </section>
+  </div>
 </main>
 
 <script>
@@ -188,6 +212,15 @@ function el(tag, props, ...children) {
   return node;
 }
 const $ = (id) => document.getElementById(id);
+
+function showPage(name) {
+  document.querySelectorAll('.page').forEach((page) => { page.hidden = page.id !== 'page-' + name; });
+  document.querySelectorAll('.tabs button').forEach((tab) => {
+    if (tab.dataset.page === name) tab.setAttribute('aria-current', 'page'); else tab.removeAttribute('aria-current');
+  });
+  history.replaceState(null, '', '#' + name);
+}
+document.querySelectorAll('[data-page]').forEach((button) => button.addEventListener('click', () => showPage(button.dataset.page)));
 
 function showError(message) {
   const box = $('error');
@@ -237,9 +270,16 @@ function authorLinks(m) {
 /** Clicking anywhere on the row toggles its checkbox, except on links and controls or while selecting text */
 function toggleOnRowClick(row, box) {
   row.addEventListener('click', (e) => {
-    if (box.disabled || e.target.closest('a, input, button') || window.getSelection().toString()) return;
+    if (box.disabled || e.target.closest('a, input, button, details') || window.getSelection().toString()) return;
     box.click();
   });
+}
+
+/** A collapsed "Label N mods" line that lists the names when opened, nothing for an empty list */
+function note(label, names, problem) {
+  if (!names.length) return '';
+  return el('details', { class: 'note' + (problem ? ' warn' : '') }, el('summary', {}, label + ' ' + names.length + (names.length === 1 ? ' mod' : ' mods')),
+    el('ul', {}, ...names.map((name) => el('li', {}, name))));
 }
 
 function renderMods() {
@@ -256,8 +296,8 @@ function renderMods() {
     const row = el('tr', { class: (state.selected.has(m.path) ? 'selected ' : '') + (m.disabled ? 'disabled' : '') },
       el('td', {}, box),
       el('td', { title: m.description || '' }, m.name, m.disabled ? el('span', { class: 'badge' }, 'disabled') : '', el('div', { class: 'muted' }, m.path),
-        m.required_by.length ? el('div', { class: 'muted', title: m.required_by.join('\n') },
-          (m.disabled ? 'Needed by ' : 'Required by ') + m.required_by.length + (m.required_by.length === 1 ? ' mod' : ' mods')) : ''),
+        // Needing a mod that is off, or being needed by mods while off, is a problem and shows in the warning color
+        note('Required by', m.required_by, m.disabled), note('Needs disabled', m.needs, true)),
       el('td', {}, m.version || ''),
       el('td', {}, update ? el('span', { class: 'badge update' }, update) : (m.updatable ? '' : el('span', { class: 'muted' }, 'no source'))),
       el('td', {}, ...authorLinks(m)),
@@ -316,6 +356,8 @@ async function refresh() {
   const data = await api('/api/state');
   $('modsDir').textContent = data.mods_dir || 'No mods folder yet';
   document.querySelectorAll('[data-needs-folder]').forEach((section) => { section.hidden = !data.mods_dir; });
+  $('noFolder').hidden = Boolean(data.mods_dir);
+  state.hasFolder = Boolean(data.mods_dir);
   $('folderStatus').textContent = data.mods_dir ? '' : 'Prismatic could not find your Stardew Valley Mods folder. Choose it below.';
   if (document.activeElement !== $('folderValue')) $('folderValue').value = data.mods_dir || '';
   $('folderChoices').replaceChildren(...data.candidates.map((c) => el('option', { value: c.path, label: c.found ? 'found' : 'not found' })));
@@ -338,7 +380,11 @@ async function refresh() {
 }
 
 async function startJob(path, body) {
-  await guarded(async () => { await api(path, 'POST', body); await refresh(); });
+  await guarded(async () => {
+    await api(path, 'POST', body);
+    await refresh();
+    $('activity').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
 }
 
 function download(name, text) {
@@ -357,13 +403,14 @@ $('check').addEventListener('click', () => guarded(async () => {
   renderMods();
 }));
 $('selectOutdated').addEventListener('click', () => { state.selected = new Set(Object.keys(state.updates)); renderMods(); });
-/** SMAPI skips a mod whose folder starts with a dot. Warns first about enabled mods that need a mod being disabled. */
+/** SMAPI skips a mod whose folder starts with a dot. Disabling also disables the mods that need it, enabling also enables the mods it needs. */
 function setEnabled(enabled) {
   return guarded(async () => {
     const picked = state.mods.filter((m) => state.selected.has(m.path) && m.disabled === enabled);
     const going = new Set(picked.map((m) => m.name));
-    const broken = [...new Set(picked.flatMap((m) => m.required_by))].filter((name) => !going.has(name));
-    if (!enabled && broken.length && !confirm('These mods need a mod you are disabling and will not load properly:\n\n' + broken.join('\n') + '\n\nDisable anyway?')) return;
+    const also = [...new Set(picked.flatMap((m) => (enabled ? m.needs : m.required_by)))].filter((name) => !going.has(name));
+    if (also.length && !confirm((enabled ? 'These disabled mods are needed and will be enabled too:' : 'These mods need a mod you are disabling and will be disabled too:')
+      + '\n\n' + also.join('\n') + '\n\nContinue?')) return;
     await api('/api/enable', 'POST', { paths: picked.map((m) => m.path), enabled });
     await refresh();
   });
@@ -464,6 +511,7 @@ $('importGo').addEventListener('click', async () => {
       }
     }
   });
+  showPage(!state.hasFolder || location.hash === '#settings' ? 'settings' : 'mods');
 })();
 </script>
 </body>

@@ -299,11 +299,12 @@ async fn disabling_a_mod_hides_it_from_updates_and_warns_about_the_mods_that_nee
 
     assert_eq!(post(&base, &token, "/api/enable", serde_json::json!({"paths": ["Fake"], "enabled": false})).await.0, 204);
     assert!(dir.join(".Fake/manifest.json").is_file() && !dir.join("Fake").exists());
+    assert!(dir.join(".Pack/manifest.json").is_file(), "the mod that needs it goes off too");
     let mods = state(&base, &token).await["mods"].clone();
     let fake = mods.as_array().unwrap().iter().find(|m| m["name"] == "Fake").unwrap();
     assert_eq!((fake["disabled"].clone(), fake["path"].clone()), (true.into(), ".Fake".into()));
     assert_eq!(post(&base, &token, "/api/update", serde_json::json!({"paths": [".Fake"]})).await.0, 400, "disabled mods are not updated");
 
-    assert_eq!(post(&base, &token, "/api/enable", serde_json::json!({"paths": [".Fake"], "enabled": true})).await.0, 204);
-    assert!(dir.join("Fake/manifest.json").is_file());
+    assert_eq!(post(&base, &token, "/api/enable", serde_json::json!({"paths": [".Pack"], "enabled": true})).await.0, 204);
+    assert!(dir.join("Fake/manifest.json").is_file() && dir.join("Pack/manifest.json").is_file(), "the mod it needs comes on too");
 }

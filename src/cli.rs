@@ -10,7 +10,7 @@ use anyhow::{anyhow, bail, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use inquire::MultiSelect;
 use prismatic::manager::{Added, UpdateResult, Verdict};
-use prismatic::manifest::{dependents, Mod, UpdateKeys};
+use prismatic::manifest::{Mod, UpdateKeys};
 use prismatic::modlist::{is_installed, installable, list_json, parse_list, Entry};
 use prismatic::nexus::mod_id_from_url;
 use prismatic::progress::{Event, Progress};
@@ -151,36 +151,32 @@ fn matching<'a>(mods: &'a [Mod], mods_dir: &Path, query: &str) -> Vec<&'a Mod> {
 }
 
 /// Fails when a name matches no mod or several, or a folder couldn't be renamed. The other names are still handled.
+/// Disabling a mod also disables the mods that need it, enabling one also enables the mods it needs.
 pub async fn set_enabled(manager: &Manager, queries: &[String], enabled: bool) -> Result<ExitCode> {
-    let mods = scan(manager).await?;
+    scan(manager).await?;
     let (verb, mods_dir) = (if enabled { "enabled" } else { "disabled" }, manager.mods_dir());
     let mut failed = false;
     for query in queries {
+        // Read again every time, an earlier name may have moved this one along with it
+        let mods = manager.mods().await?;
         match matching(&mods, mods_dir, query)[..] {
             [] => {
                 failed = true;
                 eprintln!("{query}: no such mod");
             }
-            [m] => {
-                let name = m.display_name(mods_dir);
-                if m.is_disabled(mods_dir) != enabled {
-                    println!("{name}: already {verb}");
-                    continue;
-                }
-                match manager.set_enabled(m, enabled).await {
-                    Ok(()) => println!("{name}: {verb}"),
-                    Err(e) => {
-                        failed = true;
-                        eprintln!("{name}: {e}");
-                        continue;
+            [m] => match manager.set_enabled(std::slice::from_ref(m), enabled).await {
+                Ok(changed) if changed.is_empty() => println!("{}: already {verb}", m.display_name(mods_dir)),
+                Ok(changed) => {
+                    for other in &changed {
+                        let name = other.display_name(mods_dir);
+                        if other.path == m.path { println!("{name}: {verb}") } else { println!("also {verb}: {name}") }
                     }
                 }
-                if !enabled {
-                    for other in dependents(&mods, m, mods_dir) {
-                        eprintln!("Warning: {} needs {name} and won't load properly", other.display_name(mods_dir));
-                    }
+                Err(e) => {
+                    failed = true;
+                    eprintln!("{}: {e}", m.display_name(mods_dir));
                 }
-            }
+            },
             ref several => {
                 failed = true;
                 let folders: Vec<_> = several.iter().map(|m| m.relative(mods_dir)).collect();

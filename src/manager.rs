@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use anyhow::{anyhow, bail, Result};
 use bytes::Bytes;
-use crate::manifest::{is_nexus_id, locate_mods, locate_mods_at, Mod, Scan, UpdateKey, UpdateKeys};
+use crate::manifest::{cascade, is_nexus_id, locate_mods, locate_mods_at, Mod, Scan, UpdateKey, UpdateKeys};
 use crate::modlist::{collect_entries, installable, Collected, Entry};
 use crate::nexus::Nexus;
 use crate::progress::{Event, Progress};
@@ -120,13 +120,36 @@ impl Manager {
         Ok(self.scan().await?.mods)
     }
 
-    /// Enables or disables `mod_`, which does nothing if it is already so
-    pub async fn set_enabled(&self, mod_: &Mod, enabled: bool) -> Result<()> {
-        if mod_.is_disabled(&self.mods_dir) != enabled {
-            return Ok(());
-        }
-        let (mods_dir, path) = (self.mods_dir.clone(), mod_.path.clone());
-        tokio::task::spawn_blocking(move || install::set_enabled(&mods_dir, &path, enabled)).await?
+    /// Enables or disables `targets` and the mods that have to follow them (see [`cascade`]).
+    /// Returns every mod that changed, which does not include targets that already were as asked.
+    pub async fn set_enabled(&self, targets: &[Mod], enabled: bool) -> Result<Vec<Mod>> {
+        let mods = self.mods().await?;
+        let changed: Vec<Mod> = cascade(&mods, &targets.iter().collect::<Vec<_>>(), enabled, &self.mods_dir).into_iter().cloned().collect();
+        // Taking the dot off a folder enables everything below it, so the mods there that stay off get a dot of their own
+        let dotted_parents: Vec<&Path> = changed.iter()
+            .flat_map(|m| m.path.ancestors().skip(1).take_while(|dir| *dir != self.mods_dir))
+            .filter(|dir| dir.file_name().is_some_and(|name| name.to_string_lossy().starts_with('.')))
+            .collect();
+        let keep_off: Vec<PathBuf> = if enabled {
+            mods.iter()
+                .filter(|m| !changed.iter().any(|c| c.path == m.path) && !m.path.file_name().is_some_and(|name| name.to_string_lossy().starts_with('.')))
+                .filter(|m| dotted_parents.iter().any(|parent| m.path.starts_with(parent)))
+                .map(|m| m.path.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let (mods_dir, paths) = (self.mods_dir.clone(), changed.iter().map(|m| m.path.clone()).collect::<Vec<_>>());
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            for path in &keep_off {
+                install::set_enabled(&mods_dir, path, false)?;
+            }
+            for path in &paths {
+                install::set_enabled(&mods_dir, path, enabled)?;
+            }
+            Ok(())
+        }).await??;
+        Ok(changed)
     }
 
     /// Newest version SMAPI suggests for each mod, in the order of `mods`. `None` means up to date.
@@ -376,5 +399,55 @@ mod tests {
         assert!(matches!(verdicts[0], Verdict::Unsupported("Unknown or unsupported source")));
         assert!(matches!(verdicts[1], Verdict::Update));
         assert!(matches!(verdicts[2], Verdict::Unsupported("Subkeys are not yet supported")));
+    }
+
+    #[tokio::test]
+    async fn disabling_follows_the_mods_that_need_it_and_enabling_the_mods_it_needs() {
+        let dir = scratch_dir();
+        write_mod(&dir, "Frame", r#"{"Name":"Frame","UniqueID":"a.frame"}"#);
+        write_mod(&dir, "Lib", r#"{"Name":"Lib","UniqueID":"a.lib","Dependencies":[{"UniqueID":"A.Frame"}]}"#);
+        write_mod(&dir, "Pack", r#"{"Name":"Pack","UniqueID":"a.pack","ContentPackFor":{"UniqueID":"a.lib"}}"#);
+        write_mod(&dir, "Free", r#"{"Name":"Free","UniqueID":"a.free","Dependencies":[{"UniqueID":"a.frame","IsRequired":false}]}"#);
+        let manager = Manager::new(dir.clone()).unwrap();
+        let find = |mods: &[crate::manifest::Mod], name: &str| mods.iter().find(|m| m.manifest.name.as_deref() == Some(name)).unwrap().clone();
+
+        let mods = manager.mods().await.unwrap();
+        let changed = manager.set_enabled(&[find(&mods, "Frame")], false).await.unwrap();
+        assert_eq!(changed.len(), 3);
+        for folder in [".Frame", ".Lib", ".Pack", "Free"] {
+            assert!(dir.join(folder).is_dir(), "{folder}");
+        }
+
+        let mods = manager.mods().await.unwrap();
+        let changed = manager.set_enabled(&[find(&mods, "Pack")], true).await.unwrap();
+        assert_eq!(changed.len(), 3, "Pack brings Lib and Frame");
+        assert!(dir.join("Frame").is_dir() && dir.join("Pack").is_dir());
+        assert!(manager.set_enabled(&[find(&manager.mods().await.unwrap(), "Pack")], true).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn enabling_a_mod_of_a_disabled_pack_keeps_its_siblings_off() {
+        let dir = scratch_dir();
+        write_mod(&dir, ".Pack/A", r#"{"Name":"A","UniqueID":"x.a"}"#);
+        write_mod(&dir, ".Pack/B", r#"{"Name":"B","UniqueID":"x.b"}"#);
+        let manager = Manager::new(dir.clone()).unwrap();
+        let mods = manager.mods().await.unwrap();
+        let a = mods.iter().find(|m| m.manifest.name.as_deref() == Some("A")).unwrap().clone();
+
+        manager.set_enabled(&[a], true).await.unwrap();
+
+        assert!(dir.join("Pack/A").is_dir() && dir.join("Pack/.B").is_dir());
+    }
+
+    #[test]
+    fn a_requirement_an_enabled_mod_already_provides_is_not_enabled_again() {
+        use crate::manifest::{cascade, locate_mods};
+        let dir = scratch_dir();
+        write_mod(&dir, "Needs", r#"{"Name":"Needs","UniqueID":"x.needs","Dependencies":[{"UniqueID":"x.lib"}]}"#);
+        write_mod(&dir, "Lib", r#"{"Name":"Lib","UniqueID":"x.lib"}"#);
+        write_mod(&dir, ".Lib old", r#"{"Name":"Lib old","UniqueID":"X.LIB"}"#);
+        let mods = locate_mods(&dir).unwrap().mods;
+        let needs = mods.iter().find(|m| m.manifest.name.as_deref() == Some("Needs")).unwrap();
+        assert!(cascade(&mods, &[needs], true, &dir).is_empty());
     }
 }

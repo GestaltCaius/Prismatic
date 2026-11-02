@@ -61,13 +61,13 @@ enum Command {
         #[clap(long)]
         no_open: bool,
     },
-    /// Makes SMAPI ignore mods by putting a dot in front of their folder name
+    /// Makes SMAPI ignore mods, and the mods that need them, by putting a dot in front of their folder name
     Disable {
         /// Mod names, folders or unique IDs, as `list` shows them
         #[clap(required = true)]
         mods: Vec<String>,
     },
-    /// Undoes `disable`
+    /// Undoes `disable`, and also enables the disabled mods they need
     Enable {
         /// Mod names, folders or unique IDs, as `list` shows them
         #[clap(required = true)]

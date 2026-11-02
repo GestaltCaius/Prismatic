@@ -183,12 +183,47 @@ pub fn locate_mods_at(dir: &Path) -> Result<Scan> {
     locate_mods(dir)
 }
 
-/// The enabled mods among `mods` that can't work without `of`, so disabling it would break them
+/// What changes along with `targets` when they are disabled or enabled.
+///
+/// That is the targets themselves, unless they already are as asked, and the mods that have to follow, however deep.
+/// Disabling takes the enabled mods that need a target, enabling takes the disabled mods a target needs.
+/// A requirement that an enabled mod already provides is left alone, since SMAPI refuses two mods with one `UniqueID`.
+pub fn cascade<'a>(mods: &'a [Mod], targets: &[&Mod], enabled: bool, mods_dir: &Path) -> Vec<&'a Mod> {
+    let has_id = |m: &Mod, id: &str| m.manifest.unique_id.as_deref().is_some_and(|own| own.eq_ignore_ascii_case(id));
+    let mut chosen: Vec<&Mod> = mods.iter().filter(|m| targets.iter().any(|target| target.path == m.path)).collect();
+    let mut next = 0;
+    while let Some(&current) = chosen.get(next) {
+        next += 1;
+        let more: Vec<&Mod> = if enabled {
+            current.manifest.required_ids().into_iter().filter_map(|id| {
+                let providers: Vec<&Mod> = mods.iter().filter(|m| has_id(m, id)).collect();
+                let provided = providers.iter().any(|m| !m.is_disabled(mods_dir) || chosen.iter().any(|c| c.path == m.path));
+                if provided { None } else { providers.first().copied() }
+            }).collect()
+        } else {
+            let Some(id) = current.manifest.unique_id.as_deref() else { continue };
+            mods.iter()
+                .filter(|m| !m.is_disabled(mods_dir) && m.manifest.required_ids().iter().any(|required| required.eq_ignore_ascii_case(id)))
+                .collect()
+        };
+        for m in more {
+            if !chosen.iter().any(|c| c.path == m.path) {
+                chosen.push(m);
+            }
+        }
+    }
+    chosen.retain(|m| m.is_disabled(mods_dir) == enabled);
+    chosen
+}
+
+/// The enabled mods that can't work without `of`, so they go off with it
 pub fn dependents<'a>(mods: &'a [Mod], of: &Mod, mods_dir: &Path) -> Vec<&'a Mod> {
-    let Some(id) = &of.manifest.unique_id else { return Vec::new() };
-    mods.iter()
-        .filter(|other| !other.is_disabled(mods_dir) && other.manifest.required_ids().iter().any(|required| required.eq_ignore_ascii_case(id)))
-        .collect()
+    cascade(mods, &[of], false, mods_dir).into_iter().filter(|m| m.path != of.path).collect()
+}
+
+/// The disabled mods `of` can't work without, so they come on with it
+pub fn requirements<'a>(mods: &'a [Mod], of: &Mod, mods_dir: &Path) -> Vec<&'a Mod> {
+    cascade(mods, &[of], true, mods_dir).into_iter().filter(|m| m.path != of.path).collect()
 }
 
 /// Every mod below `dir`, including the disabled ones (see [`Mod::is_disabled`]) but not the `.old` backups.

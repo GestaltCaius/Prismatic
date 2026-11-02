@@ -10,7 +10,7 @@ use axum::Json;
 use prismatic::manager::{Added, UpdateResult, Verdict};
 use prismatic::paths::{default_candidates, default_mods_dir, expand_home};
 use prismatic::Manager;
-use prismatic::manifest::{dependents, Mod, UpdateKeys};
+use prismatic::manifest::{dependents, requirements, Mod, UpdateKeys};
 use prismatic::modlist::{installable, is_installed, list_json, parse_list};
 use prismatic::nexus::{mod_id_from_url, Nexus};
 use prismatic::progress::Event;
@@ -59,8 +59,10 @@ pub struct ModInfo {
     updatable: bool,
     /// SMAPI ignores it, its folder starts with a dot
     disabled: bool,
-    /// Enabled mods that can't work without this one
+    /// Enabled mods that can't work without this one, so they go off with it
     required_by: Vec<String>,
+    /// Disabled mods this one can't work without, so they come on with it
+    needs: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -102,8 +104,8 @@ pub async fn state(State(state): State<Shared>) -> ApiResult<Json<StateResponse>
     });
     let found = tokio::time::timeout(SOURCE_LOOKUP, lookup).await.ok().and_then(Result::ok);
     let all = found.as_ref().unwrap_or(&scan.mods);
-    let required_by = |m: &Mod| -> Vec<String> {
-        let mut names: Vec<_> = dependents(all, m, mods_dir).into_iter().map(|other| other.display_name(mods_dir)).collect();
+    let names = |mods: Vec<&Mod>| -> Vec<String> {
+        let mut names: Vec<_> = mods.into_iter().map(|m| m.display_name(mods_dir)).collect();
         names.sort_by_key(|name| name.to_lowercase());
         names
     };
@@ -117,7 +119,8 @@ pub async fn state(State(state): State<Shared>) -> ApiResult<Json<StateResponse>
         keys: m.manifest.update_keys.iter().map(ToString::to_string).collect(),
         updatable: m.manifest.update_keys.preferred().is_some_and(|key| key.subkey.is_none()),
         disabled: m.is_disabled(mods_dir),
-        required_by: required_by(m),
+        required_by: names(dependents(all, m, mods_dir)),
+        needs: names(requirements(all, m, mods_dir)),
     }).collect();
     mods.sort_by_key(|m| m.name.to_lowercase());
     Ok(Json(StateResponse {
@@ -212,20 +215,17 @@ pub struct EnableRequest {
     enabled: bool,
 }
 
-/// Enables or disables the mods at `paths`. Refused while a job runs, since jobs work on the same folders.
+/// Enables or disables the mods at `paths`, with the mods that have to follow them (see `Manager::set_enabled`).
+/// Refused while a job runs, since jobs work on the same folders.
 pub async fn enable(State(state): State<Shared>, Json(request): Json<EnableRequest>) -> ApiResult<StatusCode> {
     let manager = manager(&state)?;
     let Ok(_idle) = state.work.try_lock() else {
         return Err(bad_request("Wait for the running job to finish"));
     };
     let mods = manager.mods().await.map_err(|e| server_error(&e))?;
-    let mut failures = Vec::new();
-    for m in mods.iter().filter(|m| request.paths.contains(&m.relative(manager.mods_dir()))) {
-        if let Err(e) = manager.set_enabled(m, request.enabled).await {
-            failures.push(format!("{}: {e}", m.display_name(manager.mods_dir())));
-        }
-    }
-    if failures.is_empty() { Ok(StatusCode::NO_CONTENT) } else { Err(bad_request(&failures.join("\n"))) }
+    let targets: Vec<Mod> = mods.into_iter().filter(|m| request.paths.contains(&m.relative(manager.mods_dir()))).collect();
+    manager.set_enabled(&targets, request.enabled).await.map_err(|e| server_error(&e))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Newest SMAPI-suggested version per mod path, only for mods that have one
