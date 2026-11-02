@@ -841,7 +841,8 @@ mod tests {
             "an installed but disabled mod and a disabled mod's needs are not missing"
         );
         let (id, needed_by) = &found[0];
-        assert_eq!(id, "x.lib");
+        // The casing is whichever manifest the directory listing yields first, and that order depends on the OS
+        assert!(id.eq_ignore_ascii_case("x.lib"), "{id}");
         let mut names: Vec<_> = needed_by
             .iter()
             .filter_map(|m| m.manifest.name.clone())
