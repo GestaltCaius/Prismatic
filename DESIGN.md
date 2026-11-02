@@ -97,7 +97,7 @@ components:
 
 # Prismatic design
 
-The web UI is `src/ui.html`, one self-contained page with plain HTML, CSS and JavaScript. The `:root` block there holds the same values as the tokens above, as CSS variables (`--bg` is `neutral`, `--text` is `on-surface`, `--accent` is `primary`, `--border` is `secondary`, `--ok`, `--warn` and `--danger` are `success`, `warning` and `error`). Keep the two in sync.
+The web UI is `src/ui/ui.html`, one self-contained page with plain HTML, CSS and JavaScript. The `:root` block there holds the same values as the tokens above, as CSS variables (`--bg` is `neutral`, `--text` is `on-surface`, `--accent` is `primary`, `--border` is `secondary`, `--ok`, `--warn` and `--danger` are `success`, `warning` and `error`). Keep the two in sync.
 
 ## Overview
 
@@ -149,11 +149,11 @@ Flat. Hierarchy comes from borders and tonal layers (neutral page, surface panel
 
 ## Assets
 
-`src/assets/` holds `logo.png` (Stardew Valley logo, 1x), `duck.png` (tab icon) and `dog.gif` (idle state in the activity panel). They belong to ConcernedApe and come from his logo press kit and the Stardew Valley wiki. Prismatic is not affiliated with Stardew Valley or ConcernedApe. Pixel art is shown at integer scales with `image-rendering: pixelated`. The server hands the images out without the API token, to loopback hosts only, because `<img>` cannot send the token header.
+`src/ui/assets/` holds `logo.png` (Stardew Valley logo, 1x), `duck.png` (tab icon) and `dog.gif` (idle state in the activity panel). They belong to ConcernedApe and come from his logo press kit and the Stardew Valley wiki. Prismatic is not affiliated with Stardew Valley or ConcernedApe. Pixel art is shown at integer scales with `image-rendering: pixelated`. The server hands the images out without the API token, to loopback hosts only, because `<img>` cannot send the token header.
 
 ## Accessibility gates
 
-These run in `cargo test` (module `ui::tests`) and fail the build.
+These run in `cargo test` (modules `ui::page::tests` and `ui::tests`) and fail the build.
 
 - Text pairs reach WCAG AA 4.5:1: on-surface, muted, success, warning and error on surface, muted and error on neutral, and on-primary on primary.
 - Control borders, the primary color and the focus ring reach 3:1 against surface.

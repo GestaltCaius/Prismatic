@@ -5,9 +5,7 @@ A CLI tool for installing and updating Stardew Valley mods.
 Download the archive for your platform from the
 [releases page](https://github.com/GestaltCaius/Prismatic/releases), unpack it and put `prismatic` somewhere on your `PATH`.
 
-Or build it with Rust: `cargo install --git https://github.com/GestaltCaius/Prismatic`,
-or without Nexus support (see [Nexus Mods](#nexus-mods))
-`cargo install --git https://github.com/GestaltCaius/Prismatic --no-default-features -F github`
+Or build it with Rust: `cargo install --git https://github.com/GestaltCaius/Prismatic`
 
 On macOS a downloaded binary is quarantined, run `xattr -d com.apple.quarantine ./prismatic` once.
 
@@ -26,6 +24,10 @@ if Stardew Valley is installed to an atypical location you can specify it with `
 | `prismatic update` | Updates installed mods if needed (`--force` skips the check) |
 | `prismatic export [file]` | Writes your mod list to `prismatic-mods.json` (or `file`) |
 | `prismatic import <file>` | Installs the mods listed in a file made by `export` |
+
+The exit code is 0 on success and 1 on any error, or when an update or import could not do all it was asked to.
+Mods without a usable update source are reported by `update` but don't count as failures.
+A mod whose `manifest.json` can't be read is skipped with a warning, the others still work.
 
 ### Web interface
 Running `prismatic` with no command (or double-clicking it on Windows) starts a small server on your own machine and opens
@@ -52,7 +54,6 @@ Mods without an update key can't be exported.
 
 ### Nexus Mods
 Nexus downloads use your `nexusmods_session` cookie, so you must be signed in to Nexus.
-If you are uncomfortable with this you can compile without the `nexus` feature.
 Treat the cookie like a password.
 
 Either sign in to Nexus in your browser and Prismatic reads the cookie from it,
@@ -70,5 +71,5 @@ $env:NEXUS_COOKIE="<value>"; prismatic update
 
 ### Config Files
 Currently only files or directories named `config` or `config.json` are copied when updating.
-When updating the mod's directory is moved into `.old` and is otherwise untouched,
+When updating the mod's directory is moved into `.old` in the mods directory and is otherwise untouched,
 if some config files aren't automatically copied they can manually be copied from there.
