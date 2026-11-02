@@ -12,8 +12,14 @@ pub async fn page() -> Response {
     let mut response = Html(PAGE).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
-    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
     headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'",
     ));
@@ -21,7 +27,14 @@ pub async fn page() -> Response {
 }
 
 fn image(content_type: &'static str, bytes: &'static [u8]) -> Response {
-    ([(header::CONTENT_TYPE, content_type), (header::CACHE_CONTROL, "max-age=3600")], bytes).into_response()
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "max-age=3600"),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 pub async fn logo() -> Response {
@@ -43,7 +56,8 @@ mod tests {
     fn color(name: &str) -> [f64; 3] {
         let key = format!("--{name}: #");
         let start = PAGE.find(&key).unwrap() + key.len();
-        let channel = |i: usize| f64::from(u8::from_str_radix(&PAGE[start + i..start + i + 2], 16).unwrap());
+        let channel =
+            |i: usize| f64::from(u8::from_str_radix(&PAGE[start + i..start + i + 2], 16).unwrap());
         [channel(0), channel(2), channel(4)]
     }
 
@@ -52,7 +66,11 @@ mod tests {
         let luminance = |name: &str| {
             let [r, g, b] = color(name).map(|c| {
                 let c = c / 255.0;
-                if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+                if c <= 0.03928 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                }
             });
             0.0722f64.mul_add(b, 0.7152f64.mul_add(g, 0.2126 * r))
         };
@@ -73,9 +91,15 @@ mod tests {
     fn text_colors_meet_wcag_aa() {
         // Pairs mirror where each color is used: panels sit on `surface`, inputs and the error banner on `bg`
         let pairs = [
-            ("text", "surface"), ("text", "bg"), ("muted", "surface"), ("muted", "bg"),
-            ("accent-contrast", "accent"), ("ok", "surface"), ("warn", "surface"),
-            ("danger", "surface"), ("danger", "bg"),
+            ("text", "surface"),
+            ("text", "bg"),
+            ("muted", "surface"),
+            ("muted", "bg"),
+            ("accent-contrast", "accent"),
+            ("ok", "surface"),
+            ("warn", "surface"),
+            ("danger", "surface"),
+            ("danger", "bg"),
         ];
         let failures = failing(&pairs, 4.5);
         assert!(failures.is_empty(), "{failures:#?}");
@@ -83,7 +107,11 @@ mod tests {
 
     #[test]
     fn control_boundaries_and_focus_ring_meet_wcag_non_text_contrast() {
-        let pairs = [("border", "surface"), ("accent", "surface"), ("text", "surface")];
+        let pairs = [
+            ("border", "surface"),
+            ("accent", "surface"),
+            ("text", "surface"),
+        ];
         let failures = failing(&pairs, 3.0);
         assert!(failures.is_empty(), "{failures:#?}");
     }
@@ -108,7 +136,10 @@ mod tests {
         }
         for tag in PAGE.split("<input").skip(1) {
             let tag = &tag[..tag.find('>').unwrap()];
-            assert!(tag.contains("aria-label="), "input without a label: <input{tag}>");
+            assert!(
+                tag.contains("aria-label="),
+                "input without a label: <input{tag}>"
+            );
         }
     }
 }

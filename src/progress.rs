@@ -3,7 +3,10 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub enum Event {
     Stage(&'static str),
-    Download { done: u64, total: Option<u64> },
+    Download {
+        done: u64,
+        total: Option<u64>,
+    },
     /// The operation is over, successfully or not
     Done,
 }

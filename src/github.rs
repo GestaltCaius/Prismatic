@@ -23,24 +23,44 @@ pub struct Download {
 
 /// `repo` is `owner/name`, as written in a `GitHub:` update key
 pub async fn latest(http: &wreq::Client, repo: &str) -> Result<Download> {
-    let (owner, name) = repo.split_once('/').ok_or_else(|| anyhow!("Invalid GitHub repo"))?;
-    let release = http.get(format!("https://api.github.com/repos/{owner}/{name}/releases/latest"))
+    let (owner, name) = repo
+        .split_once('/')
+        .ok_or_else(|| anyhow!("Invalid GitHub repo"))?;
+    let release = http
+        .get(format!(
+            "https://api.github.com/repos/{owner}/{name}/releases/latest"
+        ))
         .header("Accept", "application/vnd.github+json")
-        .send().await?
+        .send()
+        .await?
         .error_for_status()?
-        .json::<Release>().await?;
+        .json::<Release>()
+        .await?;
     pick(release)
 }
 
 fn pick(release: Release) -> Result<Download> {
-    let mut zips: Vec<Asset> = release.assets.into_iter()
+    let mut zips: Vec<Asset> = release
+        .assets
+        .into_iter()
         .filter(|asset| asset.name.to_lowercase().ends_with(".zip"))
         .collect();
     if zips.len() > 1 {
-        bail!("Multiple valid assets found: {}", zips.iter().map(|asset| asset.name.as_str()).collect::<Vec<_>>().join(", "));
+        bail!(
+            "Multiple valid assets found: {}",
+            zips.iter()
+                .map(|asset| asset.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
-    let asset = zips.pop().ok_or_else(|| anyhow!("No valid release assets found"))?;
-    Ok(Download { version: release.tag_name.trim_start_matches(['v', 'V']).to_string(), url: asset.browser_download_url })
+    let asset = zips
+        .pop()
+        .ok_or_else(|| anyhow!("No valid release assets found"))?;
+    Ok(Download {
+        version: release.tag_name.trim_start_matches(['v', 'V']).to_string(),
+        url: asset.browser_download_url,
+    })
 }
 
 #[cfg(test)]
@@ -53,10 +73,16 @@ mod tests {
 
     #[test]
     fn picks_the_only_zip_and_strips_the_tag_prefix() {
-        let download = pick(release(r#"{"tag_name":"v1.2.3","assets":[
+        let download = pick(release(
+            r#"{"tag_name":"v1.2.3","assets":[
             {"name":"notes.txt","browser_download_url":"https://x/notes.txt"},
-            {"name":"Mod 1.2.3.ZIP","browser_download_url":"https://x/mod.zip"}]}"#)).unwrap();
-        assert_eq!((download.version.as_str(), download.url.as_str()), ("1.2.3", "https://x/mod.zip"));
+            {"name":"Mod 1.2.3.ZIP","browser_download_url":"https://x/mod.zip"}]}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            (download.version.as_str(), download.url.as_str()),
+            ("1.2.3", "https://x/mod.zip")
+        );
     }
 
     #[test]

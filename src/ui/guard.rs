@@ -1,15 +1,19 @@
 //! Keeps other web pages and other machines away from the local API.
 
+use super::Shared;
 use axum::extract::{Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use super::Shared;
 
 pub const TOKEN_HEADER: &str = "x-prismatic-token";
 
 fn constant_time_eq(a: &str, b: &str) -> bool {
-    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0, |acc, (x, y)| acc | (x ^ y))
+            == 0
 }
 
 /// Only the loopback names with our own port, anything else is a DNS rebinding attempt
@@ -19,22 +23,30 @@ fn allowed_host(host: &str, port: u16) -> bool {
 }
 
 fn token_from_query(query: &str) -> Option<&str> {
-    query.split('&').find_map(|pair| pair.strip_prefix("token="))
+    query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("token="))
 }
 
 /// Requires a loopback `Host` and the launch token (in the query for the page, in a header for the API)
 pub async fn guard(State(state): State<Shared>, request: Request, next: Next) -> Response {
-    let host_ok = request.headers().get(header::HOST)
+    let host_ok = request
+        .headers()
+        .get(header::HOST)
         .and_then(|host| host.to_str().ok())
         .is_some_and(|host| allowed_host(host, state.port));
     let supplied = if request.uri().path() == "/" {
         request.uri().query().and_then(token_from_query)
     } else {
-        request.headers().get(TOKEN_HEADER).and_then(|token| token.to_str().ok())
+        request
+            .headers()
+            .get(TOKEN_HEADER)
+            .and_then(|token| token.to_str().ok())
     };
     // Images can't send the token header, and they hold nothing private
     let public = request.uri().path().starts_with("/assets/");
-    if !host_ok || !(public || supplied.is_some_and(|token| constant_time_eq(token, &state.token))) {
+    if !host_ok || !(public || supplied.is_some_and(|token| constant_time_eq(token, &state.token)))
+    {
         return (StatusCode::FORBIDDEN, "Forbidden").into_response();
     }
     next.run(request).await
