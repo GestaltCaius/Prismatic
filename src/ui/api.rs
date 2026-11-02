@@ -10,7 +10,7 @@ use axum::Json;
 use prismatic::manager::{Added, UpdateResult, Verdict};
 use prismatic::paths::{default_candidates, default_mods_dir, expand_home};
 use prismatic::Manager;
-use prismatic::manifest::{Mod, UpdateKeys};
+use prismatic::manifest::{dependents, Mod, UpdateKeys};
 use prismatic::modlist::{installable, is_installed, list_json, parse_list};
 use prismatic::nexus::{mod_id_from_url, Nexus};
 use prismatic::progress::Event;
@@ -57,6 +57,10 @@ pub struct ModInfo {
     keys: Vec<String>,
     /// Whether `update` knows how to update this mod
     updatable: bool,
+    /// SMAPI ignores it, its folder starts with a dot
+    disabled: bool,
+    /// Enabled mods that can't work without this one
+    required_by: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -97,7 +101,13 @@ pub async fn state(State(state): State<Shared>) -> ApiResult<Json<StateResponse>
         async move { manager.resolve_sources(mods).await }
     });
     let found = tokio::time::timeout(SOURCE_LOOKUP, lookup).await.ok().and_then(Result::ok);
-    let mut mods: Vec<ModInfo> = found.as_ref().unwrap_or(&scan.mods).iter().map(|m| ModInfo {
+    let all = found.as_ref().unwrap_or(&scan.mods);
+    let required_by = |m: &Mod| -> Vec<String> {
+        let mut names: Vec<_> = dependents(all, m, mods_dir).into_iter().map(|other| other.display_name(mods_dir)).collect();
+        names.sort_by_key(|name| name.to_lowercase());
+        names
+    };
+    let mut mods: Vec<ModInfo> = all.iter().map(|m| ModInfo {
         path: m.relative(mods_dir),
         name: m.display_name(mods_dir),
         version: m.manifest.version.clone(),
@@ -106,6 +116,8 @@ pub async fn state(State(state): State<Shared>) -> ApiResult<Json<StateResponse>
         unique_id: m.manifest.unique_id.clone(),
         keys: m.manifest.update_keys.iter().map(ToString::to_string).collect(),
         updatable: m.manifest.update_keys.preferred().is_some_and(|key| key.subkey.is_none()),
+        disabled: m.is_disabled(mods_dir),
+        required_by: required_by(m),
     }).collect();
     mods.sort_by_key(|m| m.name.to_lowercase());
     Ok(Json(StateResponse {
@@ -179,11 +191,12 @@ pub async fn forget_cookie(State(state): State<Shared>) -> StatusCode {
     StatusCode::NO_CONTENT
 }
 
-/// Mods whose path is in `paths`, or all of them when `paths` is `None`
+/// Enabled mods whose path is in `paths`, or all of them when `paths` is `None`. Disabled mods are left alone.
 async fn select_mods(manager: &Manager, paths: Option<&[String]>) -> ApiResult<Vec<Mod>> {
     let mods = manager.mods().await.map_err(|e| server_error(&e))?;
     let mods = manager.resolve_sources(mods).await;
     Ok(mods.into_iter()
+        .filter(|m| !m.is_disabled(manager.mods_dir()))
         .filter(|m| paths.is_none_or(|paths| paths.contains(&m.relative(manager.mods_dir()))))
         .collect())
 }
@@ -191,6 +204,28 @@ async fn select_mods(manager: &Manager, paths: Option<&[String]>) -> ApiResult<V
 #[derive(Deserialize)]
 pub struct PathsRequest {
     paths: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+pub struct EnableRequest {
+    paths: Vec<String>,
+    enabled: bool,
+}
+
+/// Enables or disables the mods at `paths`. Refused while a job runs, since jobs work on the same folders.
+pub async fn enable(State(state): State<Shared>, Json(request): Json<EnableRequest>) -> ApiResult<StatusCode> {
+    let manager = manager(&state)?;
+    let Ok(_idle) = state.work.try_lock() else {
+        return Err(bad_request("Wait for the running job to finish"));
+    };
+    let mods = manager.mods().await.map_err(|e| server_error(&e))?;
+    let mut failures = Vec::new();
+    for m in mods.iter().filter(|m| request.paths.contains(&m.relative(manager.mods_dir()))) {
+        if let Err(e) = manager.set_enabled(m, request.enabled).await {
+            failures.push(format!("{}: {e}", m.display_name(manager.mods_dir())));
+        }
+    }
+    if failures.is_empty() { Ok(StatusCode::NO_CONTENT) } else { Err(bad_request(&failures.join("\n"))) }
 }
 
 /// Newest SMAPI-suggested version per mod path, only for mods that have one

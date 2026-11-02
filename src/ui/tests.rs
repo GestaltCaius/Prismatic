@@ -284,3 +284,26 @@ async fn the_folder_is_not_changed_while_a_job_runs_and_the_cookie_survives_a_ch
     assert_eq!(after["cookie"], "pasted");
     assert_eq!(after["explicit"], true);
 }
+
+#[tokio::test]
+async fn disabling_a_mod_hides_it_from_updates_and_warns_about_the_mods_that_need_it() {
+    let (port, token, dir) = serve().await;
+    let base = format!("http://127.0.0.1:{port}");
+    std::fs::create_dir_all(dir.join("Pack")).unwrap();
+    std::fs::write(dir.join("Pack/manifest.json"), r#"{"Name":"Pack","UniqueID":"x.pack","ContentPackFor":{"UniqueID":"X.Fake"}}"#).unwrap();
+
+    let mods = state(&base, &token).await["mods"].clone();
+    let fake = mods.as_array().unwrap().iter().find(|m| m["name"] == "Fake").unwrap();
+    assert_eq!(fake["required_by"], serde_json::json!(["Pack"]));
+    assert_eq!(fake["disabled"], false);
+
+    assert_eq!(post(&base, &token, "/api/enable", serde_json::json!({"paths": ["Fake"], "enabled": false})).await.0, 204);
+    assert!(dir.join(".Fake/manifest.json").is_file() && !dir.join("Fake").exists());
+    let mods = state(&base, &token).await["mods"].clone();
+    let fake = mods.as_array().unwrap().iter().find(|m| m["name"] == "Fake").unwrap();
+    assert_eq!((fake["disabled"].clone(), fake["path"].clone()), (true.into(), ".Fake".into()));
+    assert_eq!(post(&base, &token, "/api/update", serde_json::json!({"paths": [".Fake"]})).await.0, 400, "disabled mods are not updated");
+
+    assert_eq!(post(&base, &token, "/api/enable", serde_json::json!({"paths": [".Fake"], "enabled": true})).await.0, 204);
+    assert!(dir.join("Fake/manifest.json").is_file());
+}

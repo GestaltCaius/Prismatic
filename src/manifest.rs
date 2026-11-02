@@ -5,6 +5,8 @@ use anyhow::{anyhow, Result};
 use json_comments::StripComments;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::Error;
+use serde_json::Value;
+use crate::install::OLD_DIR;
 
 #[derive(Debug, Clone)]
 pub struct Mod {
@@ -23,12 +25,19 @@ impl Mod {
         self.manifest.name.clone().unwrap_or_else(|| self.relative(mods_dir))
     }
 
+    /// SMAPI ignores folders whose name starts with a dot, in the mods directory or anywhere below it
+    pub fn is_disabled(&self, mods_dir: &Path) -> bool {
+        self.path.strip_prefix(mods_dir).is_ok_and(|relative| {
+            relative.components().any(|part| part.as_os_str().to_string_lossy().starts_with('.'))
+        })
+    }
+
     pub fn has_update_key(&self, source: &str, id: &str) -> bool {
         self.manifest.update_keys.iter().any(|key| key.is_source(source) && key.id == id)
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Manifest {
     pub name: Option<String>,
@@ -40,6 +49,23 @@ pub struct Manifest {
     pub unique_id: Option<String>,
     #[serde(default)]
     pub update_keys: Vec<UpdateKey>,
+    /// Kept as raw JSON: a malformed list must not hide the mod, SMAPI just ignores what it can't read
+    pub dependencies: Option<Value>,
+    pub content_pack_for: Option<Value>,
+}
+
+/// SMAPI reads manifest keys without regard to case
+fn field<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
+    value.as_object()?.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| value)
+}
+
+impl Manifest {
+    /// `UniqueID`s this mod can't work without: its required dependencies and the framework it is a content pack for
+    pub fn required_ids(&self) -> Vec<&str> {
+        let required = |dependency: &&Value| field(dependency, "IsRequired").and_then(Value::as_bool).unwrap_or(true);
+        let dependencies = self.dependencies.as_ref().and_then(Value::as_array).into_iter().flatten().filter(required);
+        dependencies.chain(&self.content_pack_for).filter_map(|dependency| field(dependency, "UniqueID")?.as_str()).collect()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -157,7 +183,15 @@ pub fn locate_mods_at(dir: &Path) -> Result<Scan> {
     locate_mods(dir)
 }
 
-/// Every mod below `dir`, skipping folders that start with a dot (like the `.old` backups).
+/// The enabled mods among `mods` that can't work without `of`, so disabling it would break them
+pub fn dependents<'a>(mods: &'a [Mod], of: &Mod, mods_dir: &Path) -> Vec<&'a Mod> {
+    let Some(id) = &of.manifest.unique_id else { return Vec::new() };
+    mods.iter()
+        .filter(|other| !other.is_disabled(mods_dir) && other.manifest.required_ids().iter().any(|required| required.eq_ignore_ascii_case(id)))
+        .collect()
+}
+
+/// Every mod below `dir`, including the disabled ones (see [`Mod::is_disabled`]) but not the `.old` backups.
 /// Fails only when `dir` itself can't be read.
 pub fn locate_mods(dir: &Path) -> Result<Scan> {
     let mut scan = Scan::default();
@@ -167,7 +201,7 @@ pub fn locate_mods(dir: &Path) -> Result<Scan> {
 
 fn collect(entries: fs::ReadDir, scan: &mut Scan) {
     for entry in entries.flatten() {
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) || entry.file_name().to_string_lossy().starts_with('.') {
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) || entry.file_name() == OLD_DIR {
             continue
         }
         let path = entry.path();
@@ -220,6 +254,28 @@ mod tests {
         let mut names: Vec<_> = locate_mods(&root).unwrap().mods.into_iter().filter_map(|m| m.manifest.name).collect();
         names.sort();
         assert_eq!(names, ["A", "B", "C"]);
+    }
+
+    #[test]
+    fn finds_disabled_mods_but_not_the_backups() {
+        let root = scratch_dir();
+        write_manifest(&root.join("A"), r#"{"Name":"A"}"#);
+        write_manifest(&root.join(".B"), r#"{"Name":"B"}"#);
+        write_manifest(&root.join("Pack/.C"), r#"{"Name":"C"}"#);
+        write_manifest(&root.join(".Off/D"), r#"{"Name":"D"}"#);
+        write_manifest(&root.join(".old/E - 1.0"), r#"{"Name":"E"}"#);
+        let mut found: Vec<_> = locate_mods(&root).unwrap().mods.into_iter()
+            .map(|m| (m.manifest.name.clone().unwrap(), m.is_disabled(&root))).collect();
+        found.sort();
+        assert_eq!(found, [("A".into(), false), ("B".into(), true), ("C".into(), true), ("D".into(), true)]);
+    }
+
+    #[test]
+    fn required_ids_cover_dependencies_and_content_packs_but_not_optional_ones() {
+        let m = parse_manifest(r#"{"Dependencies": [{"UniqueID": "A.Req"}, {"uniqueid": "B.Req", "IsRequired": true},
+            {"UniqueID": "C.Opt", "IsRequired": false}, 7], "ContentPackFor": {"UniqueID": "D.Frame"}}"#).unwrap();
+        assert_eq!(m.required_ids(), ["A.Req", "B.Req", "D.Frame"]);
+        assert!(parse_manifest(r#"{"Dependencies": "nope", "ContentPackFor": null}"#).unwrap().required_ids().is_empty());
     }
 
     #[test]

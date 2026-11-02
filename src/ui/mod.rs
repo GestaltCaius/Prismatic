@@ -53,6 +53,7 @@ fn router(state: Shared) -> Router {
         .route("/api/cookie", post(api::set_cookie).delete(api::forget_cookie))
         .route("/api/cookie/environment", post(api::cookie_from_environment))
         .route("/api/cookie/browser", post(api::cookie_from_browser))
+        .route("/api/enable", post(api::enable))
         .route("/api/check", post(api::check))
         .route("/api/update", post(api::update))
         .route("/api/add", post(api::add))

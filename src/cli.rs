@@ -10,7 +10,7 @@ use anyhow::{anyhow, bail, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use inquire::MultiSelect;
 use prismatic::manager::{Added, UpdateResult, Verdict};
-use prismatic::manifest::{Mod, UpdateKeys};
+use prismatic::manifest::{dependents, Mod, UpdateKeys};
 use prismatic::modlist::{is_installed, installable, list_json, parse_list, Entry};
 use prismatic::nexus::mod_id_from_url;
 use prismatic::progress::{Event, Progress};
@@ -116,9 +116,10 @@ pub async fn list(manager: &Manager) -> Result<()> {
     for m in &mods {
         let manifest = &m.manifest;
         let relative = m.relative(manager.mods_dir());
+        let disabled = if m.is_disabled(manager.mods_dir()) { " [disabled]" } else { "" };
         match &manifest.name {
-            Some(name) => println!("{name} ({relative})"),
-            None => println!("{relative}"),
+            Some(name) => println!("{name} ({relative}){disabled}"),
+            None => println!("{relative}{disabled}"),
         }
         if let Some(description) = &manifest.description {
             println!("{description}");
@@ -138,6 +139,58 @@ pub async fn list(manager: &Manager) -> Result<()> {
     Ok(())
 }
 
+/// Mods whose name, folder or `UniqueID` is `query`, ignoring case and the dot of a disabled folder
+fn matching<'a>(mods: &'a [Mod], mods_dir: &Path, query: &str) -> Vec<&'a Mod> {
+    let wanted = query.trim_start_matches('.');
+    mods.iter()
+        .filter(|m| {
+            let names = [Some(m.display_name(mods_dir)), Some(m.relative(mods_dir)), m.manifest.unique_id.clone()];
+            names.into_iter().flatten().any(|name| name.trim_start_matches('.').eq_ignore_ascii_case(wanted))
+        })
+        .collect()
+}
+
+/// Fails when a name matches no mod or several, or a folder couldn't be renamed. The other names are still handled.
+pub async fn set_enabled(manager: &Manager, queries: &[String], enabled: bool) -> Result<ExitCode> {
+    let mods = scan(manager).await?;
+    let (verb, mods_dir) = (if enabled { "enabled" } else { "disabled" }, manager.mods_dir());
+    let mut failed = false;
+    for query in queries {
+        match matching(&mods, mods_dir, query)[..] {
+            [] => {
+                failed = true;
+                eprintln!("{query}: no such mod");
+            }
+            [m] => {
+                let name = m.display_name(mods_dir);
+                if m.is_disabled(mods_dir) != enabled {
+                    println!("{name}: already {verb}");
+                    continue;
+                }
+                match manager.set_enabled(m, enabled).await {
+                    Ok(()) => println!("{name}: {verb}"),
+                    Err(e) => {
+                        failed = true;
+                        eprintln!("{name}: {e}");
+                        continue;
+                    }
+                }
+                if !enabled {
+                    for other in dependents(&mods, m, mods_dir) {
+                        eprintln!("Warning: {} needs {name} and won't load properly", other.display_name(mods_dir));
+                    }
+                }
+            }
+            ref several => {
+                failed = true;
+                let folders: Vec<_> = several.iter().map(|m| m.relative(mods_dir)).collect();
+                eprintln!("{query}: matches {} mods, use one of their folders: {}", several.len(), folders.join(", "));
+            }
+        }
+    }
+    Ok(if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+}
+
 pub async fn add(manager: &Manager, source: &str) -> Result<()> {
     scan(manager).await?;
     let id = mod_id_from_url(source).ok_or_else(|| anyhow!("Expected a URL like https://www.nexusmods.com/stardewvalley/mods/<id>"))?;
@@ -150,7 +203,9 @@ pub async fn add(manager: &Manager, source: &str) -> Result<()> {
 
 /// Fails when an update was attempted and went wrong. Mods without a usable source are only reported.
 pub async fn update(manager: &Arc<Manager>, force: bool) -> Result<ExitCode> {
-    let mods = manager.resolve_sources(scan(manager).await?).await;
+    let mut mods = scan(manager).await?;
+    mods.retain(|m| !m.is_disabled(manager.mods_dir()));
+    let mods = manager.resolve_sources(mods).await;
     let verdicts = manager.verdicts(&mods, force).await?;
     let multi = MultiProgress::new();
     let (mut updated, mut failed, mut skipped, mut unsupported) = (0, 0, 0, 0);

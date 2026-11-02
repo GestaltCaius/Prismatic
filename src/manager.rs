@@ -120,6 +120,15 @@ impl Manager {
         Ok(self.scan().await?.mods)
     }
 
+    /// Enables or disables `mod_`, which does nothing if it is already so
+    pub async fn set_enabled(&self, mod_: &Mod, enabled: bool) -> Result<()> {
+        if mod_.is_disabled(&self.mods_dir) != enabled {
+            return Ok(());
+        }
+        let (mods_dir, path) = (self.mods_dir.clone(), mod_.path.clone());
+        tokio::task::spawn_blocking(move || install::set_enabled(&mods_dir, &path, enabled)).await?
+    }
+
     /// Newest version SMAPI suggests for each mod, in the order of `mods`. `None` means up to date.
     pub async fn suggested_versions(&self, mods: &[Mod]) -> Result<Vec<Option<String>>> {
         smapi::suggested_versions(&self.http, mods).await

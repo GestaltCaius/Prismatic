@@ -86,7 +86,7 @@ mod tests {
     fn mod_(unique_id: Option<&str>, version: &str, keys: Vec<UpdateKey>) -> Mod {
         Mod {
             path: PathBuf::from("m"),
-            manifest: Manifest { name: None, author: None, version: Some(version.into()), description: None, unique_id: unique_id.map(Into::into), update_keys: keys },
+            manifest: Manifest { version: Some(version.into()), unique_id: unique_id.map(Into::into), update_keys: keys, ..Manifest::default() },
         }
     }
 

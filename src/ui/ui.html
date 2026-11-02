@@ -59,6 +59,7 @@
   #mods tr.selected td:first-child { box-shadow: inset 4px 0 0 var(--accent); }
   .badge { font-size: 0.8em; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); }
   .badge.update { color: var(--warn); border-color: var(--warn); }
+  #mods tr.disabled td:not(:first-child) { opacity: 0.55; }
   .badge.installed, .badge.done { color: var(--ok); border-color: var(--ok); }
   .badge.unsupported, .badge.failed { color: var(--danger); border-color: var(--danger); }
   .banner { white-space: pre-line; padding: 8px 12px; border-radius: var(--radius); border: 1px solid var(--danger); color: var(--danger); display: none; }
@@ -125,6 +126,8 @@
       <button id="selectOutdated" disabled>Select outdated</button>
       <button class="primary" id="updateSelected" disabled>Update selected</button>
       <button id="updateAll">Update all</button>
+      <button id="disableSelected" disabled>Disable selected</button>
+      <button id="enableSelected" disabled>Enable selected</button>
       <button id="exportSelected">Export selected</button>
     </div>
     <div class="muted" id="modsSummary"></div>
@@ -250,9 +253,11 @@ function renderMods() {
       renderButtons();
     });
     const update = state.updates[m.path];
-    const row = el('tr', { class: state.selected.has(m.path) ? 'selected' : '' },
+    const row = el('tr', { class: (state.selected.has(m.path) ? 'selected ' : '') + (m.disabled ? 'disabled' : '') },
       el('td', {}, box),
-      el('td', { title: m.description || '' }, m.name, el('div', { class: 'muted' }, m.path)),
+      el('td', { title: m.description || '' }, m.name, m.disabled ? el('span', { class: 'badge' }, 'disabled') : '', el('div', { class: 'muted' }, m.path),
+        m.required_by.length ? el('div', { class: 'muted', title: m.required_by.join('\n') },
+          (m.disabled ? 'Needed by ' : 'Required by ') + m.required_by.length + (m.required_by.length === 1 ? ' mod' : ' mods')) : ''),
       el('td', {}, m.version || ''),
       el('td', {}, update ? el('span', { class: 'badge update' }, update) : (m.updatable ? '' : el('span', { class: 'muted' }, 'no source'))),
       el('td', {}, ...authorLinks(m)),
@@ -262,12 +267,16 @@ function renderMods() {
   });
   $('mods').replaceChildren(...rows);
   $('selectAll').checked = shown.length > 0 && shown.every((m) => state.selected.has(m.path));
-  $('modsSummary').textContent = state.mods.length + ' mods installed' + (shown.length !== state.mods.length ? ', ' + shown.length + ' shown' : '');
+  const disabledCount = state.mods.filter((m) => m.disabled).length;
+  $('modsSummary').textContent = state.mods.length + ' mods installed' + (disabledCount ? ', ' + disabledCount + ' disabled' : '') + (shown.length !== state.mods.length ? ', ' + shown.length + ' shown' : '');
   renderButtons();
 }
 
 function renderButtons() {
-  $('updateSelected').disabled = state.selected.size === 0;
+  const selected = state.mods.filter((m) => state.selected.has(m.path));
+  $('updateSelected').disabled = !selected.some((m) => !m.disabled);
+  $('disableSelected').disabled = !selected.some((m) => !m.disabled);
+  $('enableSelected').disabled = !selected.some((m) => m.disabled);
   $('selectOutdated').disabled = Object.keys(state.updates).length === 0;
   $('exportSelected').textContent = state.selected.size ? 'Export selected (' + state.selected.size + ')' : 'Export all';
 }
@@ -348,6 +357,19 @@ $('check').addEventListener('click', () => guarded(async () => {
   renderMods();
 }));
 $('selectOutdated').addEventListener('click', () => { state.selected = new Set(Object.keys(state.updates)); renderMods(); });
+/** SMAPI skips a mod whose folder starts with a dot. Warns first about enabled mods that need a mod being disabled. */
+function setEnabled(enabled) {
+  return guarded(async () => {
+    const picked = state.mods.filter((m) => state.selected.has(m.path) && m.disabled === enabled);
+    const going = new Set(picked.map((m) => m.name));
+    const broken = [...new Set(picked.flatMap((m) => m.required_by))].filter((name) => !going.has(name));
+    if (!enabled && broken.length && !confirm('These mods need a mod you are disabling and will not load properly:\n\n' + broken.join('\n') + '\n\nDisable anyway?')) return;
+    await api('/api/enable', 'POST', { paths: picked.map((m) => m.path), enabled });
+    await refresh();
+  });
+}
+$('disableSelected').addEventListener('click', () => setEnabled(false));
+$('enableSelected').addEventListener('click', () => setEnabled(true));
 $('updateSelected').addEventListener('click', () => startJob('/api/update', { paths: [...state.selected] }));
 $('updateAll').addEventListener('click', () => startJob('/api/update', { paths: null }));
 $('exportSelected').addEventListener('click', () => guarded(async () => {

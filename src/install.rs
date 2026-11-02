@@ -73,6 +73,31 @@ pub fn replace_mod(mods_dir: &Path, mod_path: &Path, version: Option<&str>, arch
     Ok(new_dir)
 }
 
+/// Disables or enables the mod in `mod_path` by renaming its folder, since SMAPI ignores folders that start with a dot.
+/// Enabling also takes the dot off the folders above it, deepest first, so the whole path is loaded again.
+pub fn set_enabled(mods_dir: &Path, mod_path: &Path, enabled: bool) -> Result<()> {
+    let parts: Vec<_> = mod_path.strip_prefix(mods_dir)?.iter().collect();
+    for depth in (0..parts.len()).rev() {
+        let name = parts[depth].to_string_lossy();
+        let renamed = match (enabled, name.strip_prefix('.')) {
+            (true, Some(visible)) => visible.to_string(),
+            (false, None) if depth == parts.len() - 1 => format!(".{name}"),
+            _ => continue,
+        };
+        let from = mods_dir.join(parts[..=depth].iter().collect::<PathBuf>());
+        // A sibling enabled earlier in the same batch may have renamed this folder already
+        if !from.exists() {
+            continue;
+        }
+        let to = from.with_file_name(&renamed);
+        if to.exists() {
+            bail!("Can't rename {} to {renamed}, a folder with that name already exists", from.display());
+        }
+        fs::rename(&from, &to)?;
+    }
+    Ok(())
+}
+
 /// Folders at or below `dir` that hold a manifest, found without reading it so a broken manifest doesn't matter
 fn mod_dirs(dir: &Path, found: &mut Vec<PathBuf>) {
     if dir.join("manifest.json").is_file() {
@@ -127,7 +152,7 @@ mod tests {
     use std::io::{Cursor, Write};
     use zip::write::FileOptions;
     use zip::ZipWriter;
-    use super::{extract_new, replace_mod};
+    use super::{extract_new, replace_mod, set_enabled};
     use crate::testutil::scratch_dir;
 
     fn archive(files: &[(&str, &str)]) -> Vec<u8> {
@@ -143,6 +168,31 @@ mod tests {
         fs::create_dir_all(mods_dir.join(folder)).unwrap();
         fs::write(mods_dir.join(folder).join("manifest.json"), "old").unwrap();
         fs::write(mods_dir.join(folder).join("config.json"), config).unwrap();
+    }
+
+    #[test]
+    fn disabling_puts_a_dot_on_the_mod_folder_and_enabling_takes_every_dot_off() {
+        let mods = scratch_dir();
+        for folder in ["Pack/A", "Pack/B", "Solo"] {
+            fs::create_dir_all(mods.join(folder)).unwrap();
+        }
+        set_enabled(&mods, &mods.join("Pack/A"), false).unwrap();
+        set_enabled(&mods, &mods.join("Solo"), false).unwrap();
+        assert!(mods.join("Pack/.A").is_dir() && mods.join(".Solo").is_dir());
+
+        // a whole pack disabled by hand, then both its mods enabled in one batch
+        fs::rename(mods.join("Pack"), mods.join(".Pack")).unwrap();
+        set_enabled(&mods, &mods.join(".Pack/.A"), true).unwrap();
+        set_enabled(&mods, &mods.join(".Pack/B"), true).unwrap();
+        assert!(mods.join("Pack/A").is_dir() && mods.join("Pack/B").is_dir() && !mods.join(".Pack").exists());
+    }
+
+    #[test]
+    fn enabling_refuses_to_replace_a_folder_that_exists() {
+        let mods = scratch_dir();
+        fs::create_dir_all(mods.join(".A")).unwrap();
+        fs::create_dir_all(mods.join("A")).unwrap();
+        assert!(set_enabled(&mods, &mods.join(".A"), true).unwrap_err().to_string().contains("already exists"));
     }
 
     #[test]
