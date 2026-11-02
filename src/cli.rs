@@ -202,21 +202,26 @@ pub async fn add(manager: &Manager, source: &str) -> Result<()> {
     let progress = bar(&MultiProgress::new(), &format!("Nexus:{id}"));
     let result = manager.add_nexus(id, &progress).await;
     progress.emit(Event::Done);
-    print_added(&result?, manager.mods_dir());
-    offer_dependencies(manager).await
+    let added = result?;
+    print_added(&added, manager.mods_dir());
+    offer_dependencies(manager, &added.mods).await
 }
 
-/// Offers to install the mods that installed mods need and that are missing, then looks again since those
-/// may need more. Without a terminal there is nobody to ask, so they are only listed.
-async fn offer_dependencies(manager: &Manager) -> Result<()> {
+/// Offers to install the mods that `installed` need and that are missing, then looks again since what gets
+/// installed may need more. Without a terminal there is nobody to ask, so they are only listed.
+/// Other installed mods that lack something are only mentioned, the web interface lists them.
+async fn offer_dependencies(manager: &Manager, installed: &[Mod]) -> Result<()> {
+    let mods_dir = manager.mods_dir();
+    let mut scope: HashSet<String> = installed.iter().map(|m| m.display_name(mods_dir)).collect();
     let mut offered = HashSet::new();
     loop {
         let mods = manager.mods().await?;
         let missing: Vec<Missing> = manager.missing_dependencies(&mods).await.into_iter()
+            .filter(|missing| missing.needed_by.iter().any(|name| scope.contains(name)))
             .filter(|missing| offered.insert(missing.unique_id.to_lowercase()))
             .collect();
         if missing.is_empty() {
-            return Ok(());
+            break;
         }
         let (installable, by_hand): (Vec<_>, Vec<_>) = missing.into_iter().partition(|missing| missing.nexus_id.is_some());
         for missing in &by_hand {
@@ -226,7 +231,7 @@ async fn offer_dependencies(manager: &Manager) -> Result<()> {
             for missing in &installable {
                 eprintln!("Warning: {} needs {}, install it from https://www.nexusmods.com/stardewvalley/mods/{}", missing.needed_by.join(", "), missing.unique_id, missing.nexus_id.as_deref().unwrap_or_default());
             }
-            return Ok(());
+            break;
         }
         let label = |missing: &Missing| format!("{} (needed by {})", missing.unique_id, missing.needed_by.join(", "));
         let picked = pick(installable, label, "Missing dependencies, pick the ones to install (space: toggle, right: all, left: none, enter: confirm)", false)?;
@@ -236,12 +241,22 @@ async fn offer_dependencies(manager: &Manager) -> Result<()> {
             let result = manager.install_missing(missing, &progress).await;
             progress.emit(Event::Done);
             match result {
-                Ok(Some(added)) => print_added(&added, manager.mods_dir()),
+                Ok(Some(added)) => {
+                    print_added(&added, mods_dir);
+                    scope.extend(added.mods.iter().map(|m| m.display_name(mods_dir)));
+                }
                 Ok(None) => {}
                 Err(e) => eprintln!("{}: {e}", missing.unique_id),
             }
         }
     }
+    let others = manager.missing_dependencies(&manager.mods().await?).await.into_iter()
+        .filter(|missing| !offered.contains(&missing.unique_id.to_lowercase()))
+        .count();
+    if others > 0 {
+        eprintln!("Note: {others} more missing dependencies of the other installed mods, the web interface lists them");
+    }
+    Ok(())
 }
 
 /// Fails when an update was attempted and went wrong. Mods without a usable source are only reported.
@@ -340,6 +355,7 @@ pub async fn import(manager: &Manager, file: &Path, all: bool) -> Result<ExitCod
     scan(manager).await?;
     let multi = MultiProgress::new();
     let (mut installed, mut skipped, mut failed) = (0, 0, 0);
+    let mut added_mods = Vec::new();
     // Sequential: Nexus rate-limits, and a pack can satisfy later entries
     for entry in entries {
         if is_installed(&manager.mods().await?, &entry) {
@@ -356,6 +372,7 @@ pub async fn import(manager: &Manager, file: &Path, all: bool) -> Result<ExitCod
         match result {
             Ok(added) => {
                 print_added(&added, manager.mods_dir());
+                added_mods.extend(added.mods);
                 installed += 1;
             }
             Err(e) => {
@@ -364,7 +381,7 @@ pub async fn import(manager: &Manager, file: &Path, all: bool) -> Result<ExitCod
             }
         }
     }
-    offer_dependencies(manager).await?;
+    offer_dependencies(manager, &added_mods).await?;
     eprintln!("{installed} installed, {failed} failed, {skipped} already installed");
     Ok(exit_code(failed))
 }
