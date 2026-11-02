@@ -1,0 +1,23 @@
+# OSV-Scanner config, see also deny.toml. These are "unmaintained" notices for crates that only
+# come in through rookie (browser cookies) and have no fixed version to move to.
+# Anything new still fails the scan.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0388"
+reason = "derivative is unmaintained, transitive via rookie"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0384"
+reason = "instant is unmaintained, transitive via rookie"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0370"
+reason = "zvariant is unmaintained, transitive via rookie on Linux"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0371"
+reason = "zbus_names is unmaintained, transitive via rookie on Linux"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0372"
+reason = "zvariant_derive is unmaintained, transitive via rookie on Linux"

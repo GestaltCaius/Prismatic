@@ -1,3 +1,4 @@
 /target
 .env
 prismatic-mods.json
+*.cdx.json

@@ -97,3 +97,10 @@ $env:NEXUS_COOKIE="<value>"; prismatic update
 Currently only files or directories named `config` or `config.json` are copied when updating.
 When updating the mod's directory is moved into `.old` in the mods directory and is otherwise untouched,
 if some config files aren't automatically copied they can manually be copied from there.
+
+## Security
+
+Release binaries are built with [cargo-auditable](https://github.com/rust-secure-code/cargo-auditable), so the list of crates
+inside them can be scanned for known vulnerabilities, for example with `osv-scanner scan source --x-plugins rust/cargoauditable -r <folder>`,
+Trivy or Grype. Each release also carries a CycloneDX SBOM (`*.cdx.json`) and `SHA256SUMS`. The release workflow scans the binaries
+and the SBOM first and does not publish if they have a known vulnerability. Pull requests run `cargo-deny` and OSV-Scanner on `Cargo.lock`.
