@@ -11,15 +11,21 @@ use zip::ZipArchive;
 pub const OLD_DIR: &str = ".old";
 
 /// Top-level folders of the archive
-fn roots(zip: &ZipArchive<Cursor<&[u8]>>) -> HashSet<String> {
-    zip.file_names().filter_map(|name| Some(name.split_once('/')?.0.to_string())).collect()
+fn roots(zip: &ZipArchive<Cursor<&[u8]>>) -> Result<HashSet<String>> {
+    let mut roots = HashSet::new();
+    for name in zip.file_names() {
+        if let Some((root, _)) = name?.split_once('/') {
+            roots.insert(root.to_string());
+        }
+    }
+    Ok(roots)
 }
 
 /// Extracts an archive of a mod that is not installed yet into `mods_dir`.
 /// Returns the folders it created, and touches nothing if one of them already exists.
 pub fn extract_new(mods_dir: &Path, archive: &[u8]) -> Result<HashSet<String>> {
     let mut zip = ZipArchive::new(Cursor::new(archive))?;
-    let roots = roots(&zip);
+    let roots = roots(&zip)?;
     if roots.is_empty() {
         bail!("Zip archive has no top-level folder");
     }
@@ -39,7 +45,7 @@ pub fn replace_mod(mods_dir: &Path, mod_path: &Path, version: Option<&str>, arch
     if zip.is_empty() {
         bail!("Zip archive is empty");
     }
-    let mut roots = roots(&zip).into_iter();
+    let mut roots = roots(&zip)?.into_iter();
     let (Some(root), None) = (roots.next(), roots.next()) else {
         bail!("Zip archive must contain exactly one item in the root");
     };
@@ -47,7 +53,7 @@ pub fn replace_mod(mods_dir: &Path, mod_path: &Path, version: Option<&str>, arch
         .take_while(|dir| dir.starts_with(mods_dir) && *dir != mods_dir)
         .find(|dir| dir.file_name().is_some_and(|name| name == root.as_str()))
         .unwrap_or(mod_path);
-    if target == mod_path && mod_path.file_name().is_some_and(|name| name != root.as_str()) && zip.file_names().filter(|name| name.ends_with("manifest.json")).count() > 1 {
+    if target == mod_path && mod_path.file_name().is_some_and(|name| name != root.as_str()) && zip.file_names().filter(|name| name.as_ref().is_ok_and(|name| name.ends_with("manifest.json"))).count() > 1 {
         bail!("This download is a pack of mods, but the mod is not in a folder named {root}. Update it by hand or rename the pack folder");
     }
     let parent = target.parent().ok_or_else(|| anyhow!("Mod path has no parent directory"))?;
@@ -150,7 +156,7 @@ fn copy(from: &Path, to: &Path) -> Result<()> {
 mod tests {
     use std::fs;
     use std::io::{Cursor, Write};
-    use zip::write::FileOptions;
+    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
     use super::{extract_new, replace_mod, set_enabled};
     use crate::testutil::scratch_dir;
@@ -158,7 +164,7 @@ mod tests {
     fn archive(files: &[(&str, &str)]) -> Vec<u8> {
         let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
         for (name, text) in files {
-            zip.start_file(*name, FileOptions::<()>::default()).unwrap();
+            zip.start_file(*name, SimpleFileOptions::default()).unwrap();
             zip.write_all(text.as_bytes()).unwrap();
         }
         zip.finish().unwrap().into_inner()
@@ -287,5 +293,22 @@ mod tests {
 
         let error = extract_new(&mods, &zip).unwrap_err();
         assert!(error.to_string().contains("File exists"), "{error}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_symlink_entry_pointing_outside_the_mods_folder_is_not_followed() {
+        let (mods, outside) = (scratch_dir(), scratch_dir());
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file("Mod/manifest.json", SimpleFileOptions::default()).unwrap();
+        zip.write_all(b"{}").unwrap();
+        zip.add_symlink("Mod/escape", outside.to_str().unwrap(), SimpleFileOptions::default()).unwrap();
+        let bytes = zip.finish().unwrap().into_inner();
+
+        let _ = extract_new(&mods, &bytes);
+
+        let escape = mods.join("Mod/escape");
+        assert!(!escape.is_symlink() || !escape.canonicalize().is_ok_and(|target| target.starts_with(outside.canonicalize().unwrap())),
+            "extraction left a link to a folder outside the mods folder");
     }
 }
