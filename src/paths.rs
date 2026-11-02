@@ -97,12 +97,15 @@ mod tests {
         assert!(candidates("windows", None)[0]
             .to_string_lossy()
             .contains("Steam"));
-        assert!(candidates("plan9", Some(home)).is_empty());
+        assert_eq!(
+            candidates("plan9", Some(home)),
+            Vec::<std::path::PathBuf>::new()
+        );
     }
 
     #[test]
     fn home_based_systems_have_no_candidates_without_a_home() {
-        assert!(candidates("linux", None).is_empty());
+        assert_eq!(candidates("linux", None), Vec::<std::path::PathBuf>::new());
     }
 
     #[test]

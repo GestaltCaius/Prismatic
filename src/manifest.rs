@@ -459,11 +459,11 @@ mod tests {
         let m = parse_manifest(r#"{"Dependencies": [{"UniqueID": "A.Req"}, {"uniqueid": "B.Req", "IsRequired": true},
             {"UniqueID": "C.Opt", "IsRequired": false}, 7], "ContentPackFor": {"UniqueID": "D.Frame"}}"#).unwrap();
         assert_eq!(m.required_ids(), ["A.Req", "B.Req", "D.Frame"]);
-        assert!(
+        assert_eq!(
             parse_manifest(r#"{"Dependencies": "nope", "ContentPackFor": null}"#)
                 .unwrap()
-                .required_ids()
-                .is_empty()
+                .required_ids(),
+            Vec::<&str>::new()
         );
     }
 
