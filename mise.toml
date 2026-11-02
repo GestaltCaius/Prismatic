@@ -1,16 +1,11 @@
 [env]
-DYLD_LIBRARY_PATH="/Users/rodolphe.guillaume/.local/share/mise/installs/python/3.12/lib"
-MODS_LOCATION="/Users/rodolphe.guillaume/Library/Application Support/Steam/steamapps/common/Stardew Valley/Contents/MacOS/Mods"
-NEXUS_COOKIE="override in .env file"
-NEXUS_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+# Personal values (NEXUS_COOKIE and so on) live in the gitignored .env file
 _.file = ".env"
 
 [tools]
-cmake = "latest"
-pnpm = "latest"
-python = "3.12"
+cmake = "latest" # wreq builds BoringSSL with it
 rust = "latest"
 
 [tasks.check]
 description = "Clippy + build + tests, fast feedback before commit"
-run = ["cargo clippy --all-targets --all-features -- -D warnings", "cargo build", "cargo test"]
+run = ["cargo clippy --all-targets -- -D warnings", "cargo build", "cargo test"]
