@@ -13,11 +13,10 @@ targets = [
 
 [advisories]
 version = 2
-# Unmaintained notices for crates that only come in through rookie (browser cookies) and scraper (HTML),
+# Unmaintained notices for crates that only come in through rookie (browser cookies),
 # with no fixed version to move to. Anything new still fails the check.
 ignore = [
     { id = "RUSTSEC-2024-0388", reason = "derivative is unmaintained, transitive via rookie" },
-    { id = "RUSTSEC-2025-0057", reason = "fxhash is unmaintained, transitive via scraper" },
     { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained, transitive via rookie on Linux" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained, transitive via rookie on Linux" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained, transitive via rookie on Linux" },
