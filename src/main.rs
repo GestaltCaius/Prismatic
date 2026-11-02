@@ -61,6 +61,18 @@ enum Command {
         #[clap(long)]
         no_open: bool,
     },
+    /// Makes SMAPI ignore mods, and the mods that need them, by putting a dot in front of their folder name
+    Disable {
+        /// Mod names, folders or unique IDs, as `list` shows them
+        #[clap(required = true)]
+        mods: Vec<String>,
+    },
+    /// Undoes `disable`, and also enables the disabled mods they need
+    Enable {
+        /// Mod names, folders or unique IDs, as `list` shows them
+        #[clap(required = true)]
+        mods: Vec<String>,
+    },
     /// Updates all installed mods if needed
     Update {
         /// Skip the update check and update all mods
@@ -99,6 +111,8 @@ async fn main_inner() -> Result<ExitCode> {
     match command {
         Command::Import { file, all } => return cli::import(&manager, &file, all).await,
         Command::Update { force } => return cli::update(&manager, force).await,
+        Command::Enable { mods } => return cli::set_enabled(&manager, &mods, true).await,
+        Command::Disable { mods } => return cli::set_enabled(&manager, &mods, false).await,
         Command::Add { source } => cli::add(&manager, &source).await?,
         Command::List => cli::list(&manager).await?,
         Command::Export { file, all } => cli::export(&manager, &file, all).await?,

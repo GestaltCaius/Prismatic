@@ -138,11 +138,10 @@ mod tests {
             path: PathBuf::from(name),
             manifest: Manifest {
                 name: Some(name.into()),
-                author: None,
                 version: Some("1.0.0".into()),
-                description: None,
                 unique_id: unique_id.map(Into::into),
                 update_keys: keys,
+                ..Manifest::default()
             },
         }
     }

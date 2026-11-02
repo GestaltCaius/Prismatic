@@ -27,6 +27,8 @@ If Stardew Valley is installed somewhere else (a second Steam library, say) spec
 | `prismatic` or `prismatic ui` | Opens the [web interface](#web-interface) |
 | `prismatic list` | Lists installed mods |
 | `prismatic add <nexus url>` | Installs a mod from a Nexus Mods page, e.g. `https://www.nexusmods.com/stardewvalley/mods/3109` |
+| `prismatic disable <mod>...` | Makes SMAPI ignore mods (names, folders or unique IDs as `list` shows them), and the mods that need them |
+| `prismatic enable <mod>...` | Undoes `disable`, and also enables the mods they need |
 | `prismatic update` | Updates installed mods if needed (`--force` skips the check) |
 | `prismatic export [file]` | Writes your mod list to `prismatic-mods.json` (or `file`) |
 | `prismatic import <file>` | Installs the mods listed in a file made by `export` |
@@ -43,7 +45,14 @@ and updating one of them replaces the whole pack folder.
 ### Web interface
 Running `prismatic` with no command (or double-clicking it on Windows) starts a small server on your own machine and opens
 it in your browser. It can list installed mods, check for and install updates, add a mod from a Nexus page, and export or
-import mod lists, with the same checks the commands use. Authors link to their Nexus profile. Paste your Nexus cookie once in the page, it is kept in your browser.
+import mod lists, with the same checks the commands use. Authors link to their Nexus profile.
+Selected mods can be disabled and enabled again: Prismatic puts a dot in front of the mod's folder name (`.MyMod`), which SMAPI
+ignores on every platform. Disabling a mod also disables the enabled mods that need it, and enabling one also enables the disabled mods it needs
+(from the `Dependencies` and `ContentPackFor` of their manifests). The page lists them and asks first. Disabled mods are skipped by updates.
+
+Mods that enabled mods need but that aren't installed are listed in a "Missing dependencies" panel on the Mods page, and
+`add` and `import` offer them in a picker (everything starts selected). They are installed from Nexus Mods when SMAPI's
+database knows their page, otherwise they are named so you can install them yourself. Without a terminal the commands only list them. Paste your Nexus cookie once in the page, it is kept in your browser.
 If no mods folder is found the page asks for one, and the "Mods folder" panel can change it at any time (not while a job
 runs). Type the full path, `~` stands for your home folder. The choice is remembered in the browser and used the next
 time, unless the program is started with `-d`, which always wins. Note that the page can then install into any existing

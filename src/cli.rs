@@ -1,5 +1,6 @@
 //! The command line front end: one function per command, printing to the terminal.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::io::IsTerminal;
 use std::path::Path;
@@ -9,7 +10,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use inquire::MultiSelect;
-use prismatic::manager::{Added, UpdateResult, Verdict};
+use prismatic::manager::{Added, Missing, UpdateResult, Verdict};
 use prismatic::manifest::{Mod, UpdateKeys};
 use prismatic::modlist::{is_installed, installable, list_json, parse_list, Entry};
 use prismatic::nexus::mod_id_from_url;
@@ -65,27 +66,35 @@ fn bar(multi: &MultiProgress, label: &str) -> Progress {
     })
 }
 
-/// An entry as the picker shows it, truncated
-struct Row(Entry);
+/// An item as the picker shows it, truncated
+struct Row<T>(T, String);
 
-impl fmt::Display for Row {
+impl<T> fmt::Display for Row<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = self.0.describe();
-        match label.char_indices().nth(LABEL_WIDTH) {
-            Some((end, _)) => write!(f, "{}...", &label[..end]),
-            None => f.write_str(&label),
+        match self.1.char_indices().nth(LABEL_WIDTH) {
+            Some((end, _)) => write!(f, "{}...", &self.1[..end]),
+            None => f.write_str(&self.1),
         }
     }
 }
 
+/// Whether there is somebody to ask
+fn interactive() -> bool {
+    std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+}
+
 /// Everything starts selected, so a subset is made by deselecting.
-/// Without a terminal (or with `all`) there is nobody to ask and every entry is kept.
-fn pick(entries: Vec<Entry>, prompt: &str, all: bool) -> Result<Vec<Entry>> {
-    if all || entries.is_empty() || !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
-        return Ok(entries);
+/// Without a terminal (or with `all`) there is nobody to ask and every item is kept.
+fn pick<T>(items: Vec<T>, label: impl Fn(&T) -> String, prompt: &str, all: bool) -> Result<Vec<T>> {
+    if all || items.is_empty() || !interactive() {
+        return Ok(items);
     }
-    let defaults: Vec<usize> = (0..entries.len()).collect();
-    let picked = MultiSelect::new(prompt, entries.into_iter().map(Row).collect())
+    let defaults: Vec<usize> = (0..items.len()).collect();
+    let rows: Vec<Row<T>> = items.into_iter().map(|item| {
+        let text = label(&item);
+        Row(item, text)
+    }).collect();
+    let picked = MultiSelect::new(prompt, rows)
         .with_default(&defaults)
         .with_page_size(15)
         .raw_prompt()
@@ -116,9 +125,10 @@ pub async fn list(manager: &Manager) -> Result<()> {
     for m in &mods {
         let manifest = &m.manifest;
         let relative = m.relative(manager.mods_dir());
+        let disabled = if m.is_disabled(manager.mods_dir()) { " [disabled]" } else { "" };
         match &manifest.name {
-            Some(name) => println!("{name} ({relative})"),
-            None => println!("{relative}"),
+            Some(name) => println!("{name} ({relative}){disabled}"),
+            None => println!("{relative}{disabled}"),
         }
         if let Some(description) = &manifest.description {
             println!("{description}");
@@ -138,19 +148,122 @@ pub async fn list(manager: &Manager) -> Result<()> {
     Ok(())
 }
 
+/// Mods whose name, folder or `UniqueID` is `query`, ignoring case and the dot of a disabled folder
+fn matching<'a>(mods: &'a [Mod], mods_dir: &Path, query: &str) -> Vec<&'a Mod> {
+    let wanted = query.trim_start_matches('.');
+    mods.iter()
+        .filter(|m| {
+            let names = [Some(m.display_name(mods_dir)), Some(m.relative(mods_dir)), m.manifest.unique_id.clone()];
+            names.into_iter().flatten().any(|name| name.trim_start_matches('.').eq_ignore_ascii_case(wanted))
+        })
+        .collect()
+}
+
+/// Fails when a name matches no mod or several, or a folder couldn't be renamed. The other names are still handled.
+/// Disabling a mod also disables the mods that need it, enabling one also enables the mods it needs.
+pub async fn set_enabled(manager: &Manager, queries: &[String], enabled: bool) -> Result<ExitCode> {
+    scan(manager).await?;
+    let (verb, mods_dir) = (if enabled { "enabled" } else { "disabled" }, manager.mods_dir());
+    let mut failed = false;
+    for query in queries {
+        // Read again every time, an earlier name may have moved this one along with it
+        let mods = manager.mods().await?;
+        match matching(&mods, mods_dir, query)[..] {
+            [] => {
+                failed = true;
+                eprintln!("{query}: no such mod");
+            }
+            [m] => match manager.set_enabled(std::slice::from_ref(m), enabled).await {
+                Ok(changed) if changed.is_empty() => println!("{}: already {verb}", m.display_name(mods_dir)),
+                Ok(changed) => {
+                    for other in &changed {
+                        let name = other.display_name(mods_dir);
+                        if other.path == m.path { println!("{name}: {verb}") } else { println!("also {verb}: {name}") }
+                    }
+                }
+                Err(e) => {
+                    failed = true;
+                    eprintln!("{}: {e}", m.display_name(mods_dir));
+                }
+            },
+            ref several => {
+                failed = true;
+                let folders: Vec<_> = several.iter().map(|m| m.relative(mods_dir)).collect();
+                eprintln!("{query}: matches {} mods, use one of their folders: {}", several.len(), folders.join(", "));
+            }
+        }
+    }
+    Ok(if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+}
+
 pub async fn add(manager: &Manager, source: &str) -> Result<()> {
     scan(manager).await?;
     let id = mod_id_from_url(source).ok_or_else(|| anyhow!("Expected a URL like https://www.nexusmods.com/stardewvalley/mods/<id>"))?;
     let progress = bar(&MultiProgress::new(), &format!("Nexus:{id}"));
     let result = manager.add_nexus(id, &progress).await;
     progress.emit(Event::Done);
-    print_added(&result?, manager.mods_dir());
+    let added = result?;
+    print_added(&added, manager.mods_dir());
+    offer_dependencies(manager, &added.mods).await
+}
+
+/// Offers to install the mods that `installed` need and that are missing, then looks again since what gets
+/// installed may need more. Without a terminal there is nobody to ask, so they are only listed.
+/// Other installed mods that lack something are only mentioned, the web interface lists them.
+async fn offer_dependencies(manager: &Manager, installed: &[Mod]) -> Result<()> {
+    let mods_dir = manager.mods_dir();
+    let mut scope: HashSet<String> = installed.iter().map(|m| m.display_name(mods_dir)).collect();
+    let mut offered = HashSet::new();
+    loop {
+        let mods = manager.mods().await?;
+        let missing: Vec<Missing> = manager.missing_dependencies(&mods).await.into_iter()
+            .filter(|missing| missing.needed_by.iter().any(|name| scope.contains(name)))
+            .filter(|missing| offered.insert(missing.unique_id.to_lowercase()))
+            .collect();
+        if missing.is_empty() {
+            break;
+        }
+        let (installable, by_hand): (Vec<_>, Vec<_>) = missing.into_iter().partition(|missing| missing.nexus_id.is_some());
+        for missing in &by_hand {
+            eprintln!("Warning: {} needs {}, which SMAPI's database has no Nexus page for, install it yourself", missing.needed_by.join(", "), missing.unique_id);
+        }
+        if !interactive() {
+            for missing in &installable {
+                eprintln!("Warning: {} needs {}, install it from https://www.nexusmods.com/stardewvalley/mods/{}", missing.needed_by.join(", "), missing.unique_id, missing.nexus_id.as_deref().unwrap_or_default());
+            }
+            break;
+        }
+        let label = |missing: &Missing| format!("{} (needed by {})", missing.unique_id, missing.needed_by.join(", "));
+        let picked = pick(installable, label, "Missing dependencies, pick the ones to install (space: toggle, right: all, left: none, enter: confirm)", false)?;
+        let multi = MultiProgress::new();
+        for missing in &picked {
+            let progress = bar(&multi, &missing.unique_id);
+            let result = manager.install_missing(missing, &progress).await;
+            progress.emit(Event::Done);
+            match result {
+                Ok(Some(added)) => {
+                    print_added(&added, mods_dir);
+                    scope.extend(added.mods.iter().map(|m| m.display_name(mods_dir)));
+                }
+                Ok(None) => {}
+                Err(e) => eprintln!("{}: {e}", missing.unique_id),
+            }
+        }
+    }
+    let others = manager.missing_dependencies(&manager.mods().await?).await.into_iter()
+        .filter(|missing| !offered.contains(&missing.unique_id.to_lowercase()))
+        .count();
+    if others > 0 {
+        eprintln!("Note: {others} more missing dependencies of the other installed mods, the web interface lists them");
+    }
     Ok(())
 }
 
 /// Fails when an update was attempted and went wrong. Mods without a usable source are only reported.
 pub async fn update(manager: &Arc<Manager>, force: bool) -> Result<ExitCode> {
-    let mods = manager.resolve_sources(scan(manager).await?).await;
+    let mut mods = scan(manager).await?;
+    mods.retain(|m| !m.is_disabled(manager.mods_dir()));
+    let mods = manager.resolve_sources(mods).await;
     let verdicts = manager.verdicts(&mods, force).await?;
     let multi = MultiProgress::new();
     let (mut updated, mut failed, mut skipped, mut unsupported) = (0, 0, 0, 0);
@@ -225,7 +338,7 @@ pub async fn export(manager: &Manager, file: &Path, all: bool) -> Result<()> {
     for name in &collected.unexportable {
         eprintln!("{name}: No usable update key, can't be exported");
     }
-    let entries = pick(collected.entries, "Pick mods to export (space: toggle, right: all, left: none, enter: confirm)", all)?;
+    let entries = pick(collected.entries, Entry::describe, "Pick mods to export (space: toggle, right: all, left: none, enter: confirm)", all)?;
     if entries.is_empty() {
         bail!("No mods selected");
     }
@@ -238,10 +351,11 @@ pub async fn export(manager: &Manager, file: &Path, all: bool) -> Result<()> {
 /// Fails when an entry could not be installed
 pub async fn import(manager: &Manager, file: &Path, all: bool) -> Result<ExitCode> {
     let list = parse_list(&std::fs::read_to_string(file)?)?;
-    let entries = pick(list, "Pick mods to install (space: toggle, right: all, left: none, enter: confirm)", all)?;
+    let entries = pick(list, Entry::describe, "Pick mods to install (space: toggle, right: all, left: none, enter: confirm)", all)?;
     scan(manager).await?;
     let multi = MultiProgress::new();
     let (mut installed, mut skipped, mut failed) = (0, 0, 0);
+    let mut added_mods = Vec::new();
     // Sequential: Nexus rate-limits, and a pack can satisfy later entries
     for entry in entries {
         if is_installed(&manager.mods().await?, &entry) {
@@ -258,6 +372,7 @@ pub async fn import(manager: &Manager, file: &Path, all: bool) -> Result<ExitCod
         match result {
             Ok(added) => {
                 print_added(&added, manager.mods_dir());
+                added_mods.extend(added.mods);
                 installed += 1;
             }
             Err(e) => {
@@ -266,6 +381,7 @@ pub async fn import(manager: &Manager, file: &Path, all: bool) -> Result<ExitCod
             }
         }
     }
+    offer_dependencies(manager, &added_mods).await?;
     eprintln!("{installed} installed, {failed} failed, {skipped} already installed");
     Ok(exit_code(failed))
 }

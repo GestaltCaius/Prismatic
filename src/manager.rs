@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use anyhow::{anyhow, bail, Result};
 use bytes::Bytes;
-use crate::manifest::{is_nexus_id, locate_mods, locate_mods_at, Mod, Scan, UpdateKey, UpdateKeys};
+use crate::manifest::{cascade, is_nexus_id, locate_mods, locate_mods_at, missing, Mod, Scan, UpdateKey, UpdateKeys};
 use crate::modlist::{collect_entries, installable, Collected, Entry};
 use crate::nexus::Nexus;
 use crate::progress::{Event, Progress};
@@ -42,6 +42,16 @@ impl Added {
             m.relative(mods_dir),
         )).collect()
     }
+}
+
+/// A mod that installed mods can't work without and that isn't installed
+#[derive(Debug, Clone)]
+pub struct Missing {
+    pub unique_id: String,
+    /// Names of the enabled mods that need it
+    pub needed_by: Vec<String>,
+    /// Its Nexus page according to SMAPI's database. Without one it can't be installed from here.
+    pub nexus_id: Option<String>,
 }
 
 /// One mods directory and everything needed to look after it
@@ -120,6 +130,38 @@ impl Manager {
         Ok(self.scan().await?.mods)
     }
 
+    /// Enables or disables `targets` and the mods that have to follow them (see [`cascade`]).
+    /// Returns every mod that changed, which does not include targets that already were as asked.
+    pub async fn set_enabled(&self, targets: &[Mod], enabled: bool) -> Result<Vec<Mod>> {
+        let mods = self.mods().await?;
+        let changed: Vec<Mod> = cascade(&mods, &targets.iter().collect::<Vec<_>>(), enabled, &self.mods_dir).into_iter().cloned().collect();
+        // Taking the dot off a folder enables everything below it, so the mods there that stay off get a dot of their own
+        let dotted_parents: Vec<&Path> = changed.iter()
+            .flat_map(|m| m.path.ancestors().skip(1).take_while(|dir| *dir != self.mods_dir))
+            .filter(|dir| dir.file_name().is_some_and(|name| name.to_string_lossy().starts_with('.')))
+            .collect();
+        let keep_off: Vec<PathBuf> = if enabled {
+            mods.iter()
+                .filter(|m| !changed.iter().any(|c| c.path == m.path) && !m.path.file_name().is_some_and(|name| name.to_string_lossy().starts_with('.')))
+                .filter(|m| dotted_parents.iter().any(|parent| m.path.starts_with(parent)))
+                .map(|m| m.path.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let (mods_dir, paths) = (self.mods_dir.clone(), changed.iter().map(|m| m.path.clone()).collect::<Vec<_>>());
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            for path in &keep_off {
+                install::set_enabled(&mods_dir, path, false)?;
+            }
+            for path in &paths {
+                install::set_enabled(&mods_dir, path, enabled)?;
+            }
+            Ok(())
+        }).await??;
+        Ok(changed)
+    }
+
     /// Newest version SMAPI suggests for each mod, in the order of `mods`. `None` means up to date.
     pub async fn suggested_versions(&self, mods: &[Mod]) -> Result<Vec<Option<String>>> {
         smapi::suggested_versions(&self.http, mods).await
@@ -130,20 +172,7 @@ impl Manager {
     /// If SMAPI can't be reached the mods come back as they were.
     pub async fn resolve_sources(&self, mut mods: Vec<Mod>) -> Vec<Mod> {
         let sourceless = |m: &Mod| m.manifest.update_keys.preferred().is_none();
-        let to_ask: Vec<String> = {
-            let known = self.known_ids.lock().unwrap_or_else(PoisonError::into_inner);
-            mods.iter().filter(|m| sourceless(m)).filter_map(|m| m.manifest.unique_id.clone())
-                .filter(|id| !known.contains_key(&id.to_lowercase()))
-                .collect::<HashSet<_>>().into_iter().collect()
-        };
-        if !to_ask.is_empty() {
-            if let Ok(found) = smapi::nexus_ids(&self.http, &to_ask.iter().map(String::as_str).collect::<Vec<_>>()).await {
-                let mut known = self.known_ids.lock().unwrap_or_else(PoisonError::into_inner);
-                for id in &to_ask {
-                    known.insert(id.to_lowercase(), found.get(id).cloned());
-                }
-            }
-        }
+        self.learn_nexus_ids(mods.iter().filter(|m| sourceless(m)).filter_map(|m| m.manifest.unique_id.clone()).collect()).await;
         let known = self.known_ids.lock().unwrap_or_else(PoisonError::into_inner);
         for m in mods.iter_mut().filter(|m| sourceless(m)) {
             if let Some(id) = m.manifest.unique_id.as_ref().and_then(|unique_id| known.get(&unique_id.to_lowercase())).cloned().flatten() {
@@ -153,6 +182,50 @@ impl Manager {
         drop(known);
         inherit_pack_keys(&mut mods, &self.mods_dir);
         mods
+    }
+
+    /// Asks SMAPI once about the `UniqueID`s it hasn't been asked about yet and remembers the answers.
+    /// If SMAPI can't be reached nothing is remembered, so a later call asks again.
+    async fn learn_nexus_ids(&self, ids: Vec<String>) {
+        let to_ask: Vec<String> = {
+            let known = self.known_ids.lock().unwrap_or_else(PoisonError::into_inner);
+            ids.into_iter().filter(|id| !known.contains_key(&id.to_lowercase())).collect::<HashSet<_>>().into_iter().collect()
+        };
+        if to_ask.is_empty() {
+            return;
+        }
+        if let Ok(found) = smapi::nexus_ids(&self.http, &to_ask.iter().map(String::as_str).collect::<Vec<_>>()).await {
+            let mut known = self.known_ids.lock().unwrap_or_else(PoisonError::into_inner);
+            for id in &to_ask {
+                known.insert(id.to_lowercase(), found.get(id).cloned());
+            }
+        }
+    }
+
+    /// The mods that enabled mods in `mods` can't work without and that aren't installed, with their Nexus pages
+    /// where SMAPI's database knows them
+    pub async fn missing_dependencies(&self, mods: &[Mod]) -> Vec<Missing> {
+        let missing = missing(mods, &self.mods_dir);
+        self.learn_nexus_ids(missing.iter().map(|(id, _)| id.clone()).collect()).await;
+        let known = self.known_ids.lock().unwrap_or_else(PoisonError::into_inner);
+        missing.into_iter().map(|(unique_id, needed_by)| Missing {
+            nexus_id: known.get(&unique_id.to_lowercase()).cloned().flatten(),
+            needed_by: needed_by.into_iter().map(|m| m.display_name(&self.mods_dir)).collect(),
+            unique_id,
+        }).collect()
+    }
+
+    /// Installs a missing mod from its Nexus page. Does nothing, and returns `None`, if an earlier install
+    /// (a pack can hold several mods) already provided it.
+    pub async fn install_missing(&self, missing: &Missing, progress: &Progress) -> Result<Option<Added>> {
+        let provided = |m: &Mod| m.manifest.unique_id.as_deref().is_some_and(|own| own.eq_ignore_ascii_case(&missing.unique_id));
+        if self.mods().await?.iter().any(provided) {
+            return Ok(None);
+        }
+        let Some(id) = &missing.nexus_id else {
+            bail!("SMAPI's database has no Nexus page for {}, install it yourself", missing.unique_id);
+        };
+        self.add_nexus(id, progress).await.map(Some)
     }
 
     /// What an update should do with each of `mods`, asking SMAPI once for all of them.
@@ -367,5 +440,89 @@ mod tests {
         assert!(matches!(verdicts[0], Verdict::Unsupported("Unknown or unsupported source")));
         assert!(matches!(verdicts[1], Verdict::Update));
         assert!(matches!(verdicts[2], Verdict::Unsupported("Subkeys are not yet supported")));
+    }
+
+    #[tokio::test]
+    async fn disabling_follows_the_mods_that_need_it_and_enabling_the_mods_it_needs() {
+        let dir = scratch_dir();
+        write_mod(&dir, "Frame", r#"{"Name":"Frame","UniqueID":"a.frame"}"#);
+        write_mod(&dir, "Lib", r#"{"Name":"Lib","UniqueID":"a.lib","Dependencies":[{"UniqueID":"A.Frame"}]}"#);
+        write_mod(&dir, "Pack", r#"{"Name":"Pack","UniqueID":"a.pack","ContentPackFor":{"UniqueID":"a.lib"}}"#);
+        write_mod(&dir, "Free", r#"{"Name":"Free","UniqueID":"a.free","Dependencies":[{"UniqueID":"a.frame","IsRequired":false}]}"#);
+        let manager = Manager::new(dir.clone()).unwrap();
+        let find = |mods: &[crate::manifest::Mod], name: &str| mods.iter().find(|m| m.manifest.name.as_deref() == Some(name)).unwrap().clone();
+
+        let mods = manager.mods().await.unwrap();
+        let changed = manager.set_enabled(&[find(&mods, "Frame")], false).await.unwrap();
+        assert_eq!(changed.len(), 3);
+        for folder in [".Frame", ".Lib", ".Pack", "Free"] {
+            assert!(dir.join(folder).is_dir(), "{folder}");
+        }
+
+        let mods = manager.mods().await.unwrap();
+        let changed = manager.set_enabled(&[find(&mods, "Pack")], true).await.unwrap();
+        assert_eq!(changed.len(), 3, "Pack brings Lib and Frame");
+        assert!(dir.join("Frame").is_dir() && dir.join("Pack").is_dir());
+        assert!(manager.set_enabled(&[find(&manager.mods().await.unwrap(), "Pack")], true).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn enabling_a_mod_of_a_disabled_pack_keeps_its_siblings_off() {
+        let dir = scratch_dir();
+        write_mod(&dir, ".Pack/A", r#"{"Name":"A","UniqueID":"x.a"}"#);
+        write_mod(&dir, ".Pack/B", r#"{"Name":"B","UniqueID":"x.b"}"#);
+        let manager = Manager::new(dir.clone()).unwrap();
+        let mods = manager.mods().await.unwrap();
+        let a = mods.iter().find(|m| m.manifest.name.as_deref() == Some("A")).unwrap().clone();
+
+        manager.set_enabled(&[a], true).await.unwrap();
+
+        assert!(dir.join("Pack/A").is_dir() && dir.join("Pack/.B").is_dir());
+    }
+
+    #[test]
+    fn a_requirement_an_enabled_mod_already_provides_is_not_enabled_again() {
+        use crate::manifest::{cascade, locate_mods};
+        let dir = scratch_dir();
+        write_mod(&dir, "Needs", r#"{"Name":"Needs","UniqueID":"x.needs","Dependencies":[{"UniqueID":"x.lib"}]}"#);
+        write_mod(&dir, "Lib", r#"{"Name":"Lib","UniqueID":"x.lib"}"#);
+        write_mod(&dir, ".Lib old", r#"{"Name":"Lib old","UniqueID":"X.LIB"}"#);
+        let mods = locate_mods(&dir).unwrap().mods;
+        let needs = mods.iter().find(|m| m.manifest.name.as_deref() == Some("Needs")).unwrap();
+        assert!(cascade(&mods, &[needs], true, &dir).is_empty());
+    }
+
+    #[test]
+    fn missing_lists_what_no_installed_mod_provides_once_with_everything_that_needs_it() {
+        use crate::manifest::{locate_mods, missing};
+        let dir = scratch_dir();
+        write_mod(&dir, "A", r#"{"Name":"A","UniqueID":"x.a","Dependencies":[{"UniqueID":"x.lib"},{"UniqueID":"X.Lib"},{"UniqueID":"x.opt","IsRequired":false}]}"#);
+        write_mod(&dir, "B", r#"{"Name":"B","UniqueID":"x.b","ContentPackFor":{"UniqueID":"X.LIB"},"Dependencies":[{"UniqueID":"x.off"}]}"#);
+        write_mod(&dir, ".Off", r#"{"Name":"Off","UniqueID":"x.off"}"#);
+        write_mod(&dir, ".C", r#"{"Name":"C","UniqueID":"x.c","Dependencies":[{"UniqueID":"x.gone"}]}"#);
+        let mods = locate_mods(&dir).unwrap().mods;
+
+        let found = missing(&mods, &dir);
+
+        assert_eq!(found.len(), 1, "an installed but disabled mod and a disabled mod's needs are not missing");
+        let (id, needed_by) = &found[0];
+        assert_eq!(id, "x.lib");
+        let mut names: Vec<_> = needed_by.iter().filter_map(|m| m.manifest.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, ["A", "B"]);
+    }
+
+    #[tokio::test]
+    async fn installing_a_missing_mod_skips_what_is_there_and_says_when_nexus_has_no_page() {
+        use super::Missing;
+        let dir = scratch_dir();
+        write_mod(&dir, "Lib", r#"{"Name":"Lib","UniqueID":"x.lib"}"#);
+        let manager = Manager::new(dir).unwrap();
+        let progress = crate::progress::Progress::new(|_| {});
+        let missing = |id: &str| Missing { unique_id: id.into(), needed_by: Vec::new(), nexus_id: None };
+
+        assert!(manager.install_missing(&missing("X.LIB"), &progress).await.unwrap().is_none());
+        let Err(error) = manager.install_missing(&missing("x.other"), &progress).await else { panic!("expected an error") };
+        assert!(error.to_string().contains("no Nexus page"), "{error}");
     }
 }

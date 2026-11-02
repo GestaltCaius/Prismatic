@@ -7,10 +7,10 @@ use anyhow::anyhow;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
-use prismatic::manager::{Added, UpdateResult, Verdict};
+use prismatic::manager::{Added, Missing, UpdateResult, Verdict};
 use prismatic::paths::{default_candidates, default_mods_dir, expand_home};
 use prismatic::Manager;
-use prismatic::manifest::{Mod, UpdateKeys};
+use prismatic::manifest::{dependents, requirements, Mod, UpdateKeys};
 use prismatic::modlist::{installable, is_installed, list_json, parse_list};
 use prismatic::nexus::{mod_id_from_url, Nexus};
 use prismatic::progress::Event;
@@ -57,6 +57,20 @@ pub struct ModInfo {
     keys: Vec<String>,
     /// Whether `update` knows how to update this mod
     updatable: bool,
+    /// SMAPI ignores it, its folder starts with a dot
+    disabled: bool,
+    /// Enabled mods that can't work without this one, so they go off with it
+    required_by: Vec<String>,
+    /// Disabled mods this one can't work without, so they come on with it
+    needs: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct MissingInfo {
+    unique_id: String,
+    needed_by: Vec<String>,
+    /// Without a Nexus page SMAPI's database knows of, it can't be installed from here
+    nexus_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -68,6 +82,8 @@ pub struct StateResponse {
     /// Usual places for the mods folder on this system
     candidates: Vec<Candidate>,
     mods: Vec<ModInfo>,
+    /// Mods that enabled mods can't work without and that aren't installed
+    missing: Vec<MissingInfo>,
     jobs: Vec<Job>,
     /// Manifests that couldn't be read, their mods are missing from `mods`
     warnings: Vec<String>,
@@ -83,6 +99,7 @@ pub async fn state(State(state): State<Shared>) -> ApiResult<Json<StateResponse>
             explicit: state.explicit,
             candidates,
             mods: Vec::new(),
+            missing: Vec::new(),
             jobs: state.jobs.snapshot(),
             warnings: Vec::new(),
             cookie: state.nexus.cookie_source(),
@@ -94,10 +111,23 @@ pub async fn state(State(state): State<Shared>) -> ApiResult<Json<StateResponse>
     // for long and a later poll finds the answer
     let lookup = tokio::spawn({
         let (manager, mods) = (manager.clone(), scan.mods.clone());
-        async move { manager.resolve_sources(mods).await }
+        async move {
+            let mods = manager.resolve_sources(mods).await;
+            let missing = manager.missing_dependencies(&mods).await;
+            (mods, missing)
+        }
     });
-    let found = tokio::time::timeout(SOURCE_LOOKUP, lookup).await.ok().and_then(Result::ok);
-    let mut mods: Vec<ModInfo> = found.as_ref().unwrap_or(&scan.mods).iter().map(|m| ModInfo {
+    let (resolved, missing) = match tokio::time::timeout(SOURCE_LOOKUP, lookup).await.ok().and_then(Result::ok) {
+        Some((mods, missing)) => (Some(mods), missing),
+        None => (None, Vec::new()),
+    };
+    let all = resolved.as_ref().unwrap_or(&scan.mods);
+    let names = |mods: Vec<&Mod>| -> Vec<String> {
+        let mut names: Vec<_> = mods.into_iter().map(|m| m.display_name(mods_dir)).collect();
+        names.sort_by_key(|name| name.to_lowercase());
+        names
+    };
+    let mut mods: Vec<ModInfo> = all.iter().map(|m| ModInfo {
         path: m.relative(mods_dir),
         name: m.display_name(mods_dir),
         version: m.manifest.version.clone(),
@@ -106,6 +136,9 @@ pub async fn state(State(state): State<Shared>) -> ApiResult<Json<StateResponse>
         unique_id: m.manifest.unique_id.clone(),
         keys: m.manifest.update_keys.iter().map(ToString::to_string).collect(),
         updatable: m.manifest.update_keys.preferred().is_some_and(|key| key.subkey.is_none()),
+        disabled: m.is_disabled(mods_dir),
+        required_by: names(dependents(all, m, mods_dir)),
+        needs: names(requirements(all, m, mods_dir)),
     }).collect();
     mods.sort_by_key(|m| m.name.to_lowercase());
     Ok(Json(StateResponse {
@@ -113,6 +146,7 @@ pub async fn state(State(state): State<Shared>) -> ApiResult<Json<StateResponse>
         explicit: state.explicit,
         candidates,
         mods,
+        missing: missing.into_iter().map(|m| MissingInfo { unique_id: m.unique_id, needed_by: m.needed_by, nexus_id: m.nexus_id }).collect(),
         jobs: state.jobs.snapshot(),
         warnings: scan.errors,
         cookie: state.nexus.cookie_source(),
@@ -179,11 +213,12 @@ pub async fn forget_cookie(State(state): State<Shared>) -> StatusCode {
     StatusCode::NO_CONTENT
 }
 
-/// Mods whose path is in `paths`, or all of them when `paths` is `None`
+/// Enabled mods whose path is in `paths`, or all of them when `paths` is `None`. Disabled mods are left alone.
 async fn select_mods(manager: &Manager, paths: Option<&[String]>) -> ApiResult<Vec<Mod>> {
     let mods = manager.mods().await.map_err(|e| server_error(&e))?;
     let mods = manager.resolve_sources(mods).await;
     Ok(mods.into_iter()
+        .filter(|m| !m.is_disabled(manager.mods_dir()))
         .filter(|m| paths.is_none_or(|paths| paths.contains(&m.relative(manager.mods_dir()))))
         .collect())
 }
@@ -191,6 +226,25 @@ async fn select_mods(manager: &Manager, paths: Option<&[String]>) -> ApiResult<V
 #[derive(Deserialize)]
 pub struct PathsRequest {
     paths: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+pub struct EnableRequest {
+    paths: Vec<String>,
+    enabled: bool,
+}
+
+/// Enables or disables the mods at `paths`, with the mods that have to follow them (see `Manager::set_enabled`).
+/// Refused while a job runs, since jobs work on the same folders.
+pub async fn enable(State(state): State<Shared>, Json(request): Json<EnableRequest>) -> ApiResult<StatusCode> {
+    let manager = manager(&state)?;
+    let Ok(_idle) = state.work.try_lock() else {
+        return Err(bad_request("Wait for the running job to finish"));
+    };
+    let mods = manager.mods().await.map_err(|e| server_error(&e))?;
+    let targets: Vec<Mod> = mods.into_iter().filter(|m| request.paths.contains(&m.relative(manager.mods_dir()))).collect();
+    manager.set_enabled(&targets, request.enabled).await.map_err(|e| server_error(&e))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Newest SMAPI-suggested version per mod path, only for mods that have one
@@ -272,6 +326,36 @@ pub async fn add(State(state): State<Shared>, Json(request): Json<AddRequest>) -
         let result = manager.add_nexus(&id, &progress).await;
         progress.emit(Event::Done);
         state.jobs.finish_with(job, 0, result.map(|added| describe(&manager, &added)));
+        state.jobs.complete(job);
+    });
+    Ok(Json(job))
+}
+
+#[derive(Deserialize)]
+pub struct DependenciesRequest {
+    ids: Vec<String>,
+}
+
+/// Installs the missing mods named by `ids`, the page only offers the ones the user picked
+pub async fn install_dependencies(State(state): State<Shared>, Json(request): Json<DependenciesRequest>) -> ApiResult<Json<usize>> {
+    let manager = manager(&state)?;
+    let mods = manager.mods().await.map_err(|e| server_error(&e))?;
+    let wanted: Vec<Missing> = manager.missing_dependencies(&mods).await.into_iter()
+        .filter(|missing| request.ids.iter().any(|id| id.eq_ignore_ascii_case(&missing.unique_id)))
+        .collect();
+    if wanted.is_empty() {
+        return Err(bad_request("No missing dependencies selected"));
+    }
+    let job = state.jobs.start("Install dependencies", wanted.iter().map(|missing| missing.unique_id.clone()).collect());
+    tokio::spawn(async move {
+        let _turn = state.work.lock().await;
+        for (index, missing) in wanted.iter().enumerate() {
+            state.jobs.running(job, index);
+            let progress = state.jobs.progress(job, index);
+            let result = manager.install_missing(missing, &progress).await;
+            progress.emit(Event::Done);
+            state.jobs.finish_with(job, index, result.map(|added| added.map_or_else(|| "Already installed".into(), |added| describe(&manager, &added))));
+        }
         state.jobs.complete(job);
     });
     Ok(Json(job))
