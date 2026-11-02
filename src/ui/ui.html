@@ -102,6 +102,20 @@
   <div class="banner" id="warnings" aria-live="polite"></div>
 
   <div class="page" id="page-mods">
+    <section id="missing" hidden>
+      <h2>Missing dependencies</h2>
+      <p class="muted">Some mods need mods that are not installed. Install the ones you pick from Nexus Mods.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th></th><th>Mod</th><th>Needed by</th><th>Source</th></tr></thead>
+          <tbody id="missingRows"></tbody>
+        </table>
+      </div>
+      <div class="row" style="margin-top: var(--gap)">
+        <button class="primary" id="installMissing">Install selected</button>
+      </div>
+    </section>
+
     <section id="noFolder" hidden>
       <p>Prismatic needs your Stardew Valley <code>Mods</code> folder first.</p>
       <button class="primary" type="button" data-page="settings">Open Settings</button>
@@ -199,7 +213,7 @@
 
 <script>
 const token = new URLSearchParams(location.search).get('token') || '';
-const state = { mods: [], jobs: [], updates: {}, selected: new Set(), filter: '' };
+const state = { mods: [], missing: [], skipMissing: new Set(), jobs: [], updates: {}, selected: new Set(), filter: '' };
 let importContent = null;
 let timer = null;
 
@@ -312,6 +326,21 @@ function renderMods() {
   renderButtons();
 }
 
+/** Every missing mod with a Nexus page starts checked, the ones without can only be installed by hand */
+function renderMissing() {
+  $('missing').hidden = state.missing.length === 0;
+  $('missingRows').replaceChildren(...state.missing.map((m) => {
+    const box = el('input', { type: 'checkbox', checked: Boolean(m.nexus_id) && !state.skipMissing.has(m.unique_id), disabled: !m.nexus_id });
+    box.dataset.id = m.unique_id;
+    box.setAttribute('aria-label', 'Install ' + m.unique_id);
+    box.addEventListener('change', () => { if (box.checked) state.skipMissing.delete(m.unique_id); else state.skipMissing.add(m.unique_id); });
+    const row = el('tr', {}, el('td', {}, box), el('td', {}, m.unique_id), el('td', {}, m.needed_by.join(', ')),
+      el('td', m.nexus_id ? { class: 'key' } : {}, ...(m.nexus_id ? [sourceLink('Nexus:' + m.nexus_id)] : [el('span', { class: 'muted' }, 'not on Nexus, install it yourself')])));
+    toggleOnRowClick(row, box);
+    return row;
+  }));
+}
+
 function renderButtons() {
   const selected = state.mods.filter((m) => state.selected.has(m.path));
   $('updateSelected').disabled = !selected.some((m) => !m.disabled);
@@ -369,6 +398,8 @@ async function refresh() {
   const changed = modsJson !== lastModsJson;
   lastModsJson = modsJson;
   state.mods = data.mods;
+  state.missing = data.missing;
+  renderMissing();
   state.selected = new Set([...state.selected].filter((p) => data.mods.some((m) => m.path === p)));
   renderCookie(data.cookie);
   renderJobs();
@@ -424,6 +455,10 @@ $('exportSelected').addEventListener('click', () => guarded(async () => {
   download('prismatic-mods.json', result.content);
   if (result.skipped.length) showError(result.count + ' mods exported. Skipped (no usable update key): ' + result.skipped.join(', '));
 }));
+$('installMissing').addEventListener('click', () => {
+  const ids = [...document.querySelectorAll('#missingRows input:checked')].map((box) => box.dataset.id);
+  if (ids.length) startJob('/api/dependencies', { ids });
+});
 $('addForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   await startJob('/api/add', { url: $('addUrl').value });

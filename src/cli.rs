@@ -1,5 +1,6 @@
 //! The command line front end: one function per command, printing to the terminal.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::io::IsTerminal;
 use std::path::Path;
@@ -9,7 +10,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use inquire::MultiSelect;
-use prismatic::manager::{Added, UpdateResult, Verdict};
+use prismatic::manager::{Added, Missing, UpdateResult, Verdict};
 use prismatic::manifest::{Mod, UpdateKeys};
 use prismatic::modlist::{is_installed, installable, list_json, parse_list, Entry};
 use prismatic::nexus::mod_id_from_url;
@@ -65,27 +66,35 @@ fn bar(multi: &MultiProgress, label: &str) -> Progress {
     })
 }
 
-/// An entry as the picker shows it, truncated
-struct Row(Entry);
+/// An item as the picker shows it, truncated
+struct Row<T>(T, String);
 
-impl fmt::Display for Row {
+impl<T> fmt::Display for Row<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = self.0.describe();
-        match label.char_indices().nth(LABEL_WIDTH) {
-            Some((end, _)) => write!(f, "{}...", &label[..end]),
-            None => f.write_str(&label),
+        match self.1.char_indices().nth(LABEL_WIDTH) {
+            Some((end, _)) => write!(f, "{}...", &self.1[..end]),
+            None => f.write_str(&self.1),
         }
     }
 }
 
+/// Whether there is somebody to ask
+fn interactive() -> bool {
+    std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+}
+
 /// Everything starts selected, so a subset is made by deselecting.
-/// Without a terminal (or with `all`) there is nobody to ask and every entry is kept.
-fn pick(entries: Vec<Entry>, prompt: &str, all: bool) -> Result<Vec<Entry>> {
-    if all || entries.is_empty() || !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
-        return Ok(entries);
+/// Without a terminal (or with `all`) there is nobody to ask and every item is kept.
+fn pick<T>(items: Vec<T>, label: impl Fn(&T) -> String, prompt: &str, all: bool) -> Result<Vec<T>> {
+    if all || items.is_empty() || !interactive() {
+        return Ok(items);
     }
-    let defaults: Vec<usize> = (0..entries.len()).collect();
-    let picked = MultiSelect::new(prompt, entries.into_iter().map(Row).collect())
+    let defaults: Vec<usize> = (0..items.len()).collect();
+    let rows: Vec<Row<T>> = items.into_iter().map(|item| {
+        let text = label(&item);
+        Row(item, text)
+    }).collect();
+    let picked = MultiSelect::new(prompt, rows)
         .with_default(&defaults)
         .with_page_size(15)
         .raw_prompt()
@@ -194,7 +203,45 @@ pub async fn add(manager: &Manager, source: &str) -> Result<()> {
     let result = manager.add_nexus(id, &progress).await;
     progress.emit(Event::Done);
     print_added(&result?, manager.mods_dir());
-    Ok(())
+    offer_dependencies(manager).await
+}
+
+/// Offers to install the mods that installed mods need and that are missing, then looks again since those
+/// may need more. Without a terminal there is nobody to ask, so they are only listed.
+async fn offer_dependencies(manager: &Manager) -> Result<()> {
+    let mut offered = HashSet::new();
+    loop {
+        let mods = manager.mods().await?;
+        let missing: Vec<Missing> = manager.missing_dependencies(&mods).await.into_iter()
+            .filter(|missing| offered.insert(missing.unique_id.to_lowercase()))
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let (installable, by_hand): (Vec<_>, Vec<_>) = missing.into_iter().partition(|missing| missing.nexus_id.is_some());
+        for missing in &by_hand {
+            eprintln!("Warning: {} needs {}, which SMAPI's database has no Nexus page for, install it yourself", missing.needed_by.join(", "), missing.unique_id);
+        }
+        if !interactive() {
+            for missing in &installable {
+                eprintln!("Warning: {} needs {}, install it from https://www.nexusmods.com/stardewvalley/mods/{}", missing.needed_by.join(", "), missing.unique_id, missing.nexus_id.as_deref().unwrap_or_default());
+            }
+            return Ok(());
+        }
+        let label = |missing: &Missing| format!("{} (needed by {})", missing.unique_id, missing.needed_by.join(", "));
+        let picked = pick(installable, label, "Missing dependencies, pick the ones to install (space: toggle, right: all, left: none, enter: confirm)", false)?;
+        let multi = MultiProgress::new();
+        for missing in &picked {
+            let progress = bar(&multi, &missing.unique_id);
+            let result = manager.install_missing(missing, &progress).await;
+            progress.emit(Event::Done);
+            match result {
+                Ok(Some(added)) => print_added(&added, manager.mods_dir()),
+                Ok(None) => {}
+                Err(e) => eprintln!("{}: {e}", missing.unique_id),
+            }
+        }
+    }
 }
 
 /// Fails when an update was attempted and went wrong. Mods without a usable source are only reported.
@@ -276,7 +323,7 @@ pub async fn export(manager: &Manager, file: &Path, all: bool) -> Result<()> {
     for name in &collected.unexportable {
         eprintln!("{name}: No usable update key, can't be exported");
     }
-    let entries = pick(collected.entries, "Pick mods to export (space: toggle, right: all, left: none, enter: confirm)", all)?;
+    let entries = pick(collected.entries, Entry::describe, "Pick mods to export (space: toggle, right: all, left: none, enter: confirm)", all)?;
     if entries.is_empty() {
         bail!("No mods selected");
     }
@@ -289,7 +336,7 @@ pub async fn export(manager: &Manager, file: &Path, all: bool) -> Result<()> {
 /// Fails when an entry could not be installed
 pub async fn import(manager: &Manager, file: &Path, all: bool) -> Result<ExitCode> {
     let list = parse_list(&std::fs::read_to_string(file)?)?;
-    let entries = pick(list, "Pick mods to install (space: toggle, right: all, left: none, enter: confirm)", all)?;
+    let entries = pick(list, Entry::describe, "Pick mods to install (space: toggle, right: all, left: none, enter: confirm)", all)?;
     scan(manager).await?;
     let multi = MultiProgress::new();
     let (mut installed, mut skipped, mut failed) = (0, 0, 0);
@@ -317,6 +364,7 @@ pub async fn import(manager: &Manager, file: &Path, all: bool) -> Result<ExitCod
             }
         }
     }
+    offer_dependencies(manager).await?;
     eprintln!("{installed} installed, {failed} failed, {skipped} already installed");
     Ok(exit_code(failed))
 }

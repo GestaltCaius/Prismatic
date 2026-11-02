@@ -57,6 +57,7 @@ fn router(state: Shared) -> Router {
         .route("/api/check", post(api::check))
         .route("/api/update", post(api::update))
         .route("/api/add", post(api::add))
+        .route("/api/dependencies", post(api::install_dependencies))
         .route("/api/export", post(api::export))
         .route("/api/import/preview", post(api::import_preview))
         .route("/api/import", post(api::import))

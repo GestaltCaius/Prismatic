@@ -48,7 +48,11 @@ it in your browser. It can list installed mods, check for and install updates, a
 import mod lists, with the same checks the commands use. Authors link to their Nexus profile.
 Selected mods can be disabled and enabled again: Prismatic puts a dot in front of the mod's folder name (`.MyMod`), which SMAPI
 ignores on every platform. Disabling a mod also disables the enabled mods that need it, and enabling one also enables the disabled mods it needs
-(from the `Dependencies` and `ContentPackFor` of their manifests). The page lists them and asks first. Disabled mods are skipped by updates. Paste your Nexus cookie once in the page, it is kept in your browser.
+(from the `Dependencies` and `ContentPackFor` of their manifests). The page lists them and asks first. Disabled mods are skipped by updates.
+
+Mods that enabled mods need but that aren't installed are listed in a "Missing dependencies" panel on the Mods page, and
+`add` and `import` offer them in a picker (everything starts selected). They are installed from Nexus Mods when SMAPI's
+database knows their page, otherwise they are named so you can install them yourself. Without a terminal the commands only list them. Paste your Nexus cookie once in the page, it is kept in your browser.
 If no mods folder is found the page asks for one, and the "Mods folder" panel can change it at any time (not while a job
 runs). Type the full path, `~` stands for your home folder. The choice is remembered in the browser and used the next
 time, unless the program is started with `-d`, which always wins. Note that the page can then install into any existing

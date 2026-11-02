@@ -7,7 +7,7 @@ use anyhow::anyhow;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
-use prismatic::manager::{Added, UpdateResult, Verdict};
+use prismatic::manager::{Added, Missing, UpdateResult, Verdict};
 use prismatic::paths::{default_candidates, default_mods_dir, expand_home};
 use prismatic::Manager;
 use prismatic::manifest::{dependents, requirements, Mod, UpdateKeys};
@@ -66,6 +66,14 @@ pub struct ModInfo {
 }
 
 #[derive(Serialize)]
+pub struct MissingInfo {
+    unique_id: String,
+    needed_by: Vec<String>,
+    /// Without a Nexus page SMAPI's database knows of, it can't be installed from here
+    nexus_id: Option<String>,
+}
+
+#[derive(Serialize)]
 pub struct StateResponse {
     /// `None` until a folder is chosen
     mods_dir: Option<String>,
@@ -74,6 +82,8 @@ pub struct StateResponse {
     /// Usual places for the mods folder on this system
     candidates: Vec<Candidate>,
     mods: Vec<ModInfo>,
+    /// Mods that enabled mods can't work without and that aren't installed
+    missing: Vec<MissingInfo>,
     jobs: Vec<Job>,
     /// Manifests that couldn't be read, their mods are missing from `mods`
     warnings: Vec<String>,
@@ -89,6 +99,7 @@ pub async fn state(State(state): State<Shared>) -> ApiResult<Json<StateResponse>
             explicit: state.explicit,
             candidates,
             mods: Vec::new(),
+            missing: Vec::new(),
             jobs: state.jobs.snapshot(),
             warnings: Vec::new(),
             cookie: state.nexus.cookie_source(),
@@ -100,10 +111,17 @@ pub async fn state(State(state): State<Shared>) -> ApiResult<Json<StateResponse>
     // for long and a later poll finds the answer
     let lookup = tokio::spawn({
         let (manager, mods) = (manager.clone(), scan.mods.clone());
-        async move { manager.resolve_sources(mods).await }
+        async move {
+            let mods = manager.resolve_sources(mods).await;
+            let missing = manager.missing_dependencies(&mods).await;
+            (mods, missing)
+        }
     });
-    let found = tokio::time::timeout(SOURCE_LOOKUP, lookup).await.ok().and_then(Result::ok);
-    let all = found.as_ref().unwrap_or(&scan.mods);
+    let (resolved, missing) = match tokio::time::timeout(SOURCE_LOOKUP, lookup).await.ok().and_then(Result::ok) {
+        Some((mods, missing)) => (Some(mods), missing),
+        None => (None, Vec::new()),
+    };
+    let all = resolved.as_ref().unwrap_or(&scan.mods);
     let names = |mods: Vec<&Mod>| -> Vec<String> {
         let mut names: Vec<_> = mods.into_iter().map(|m| m.display_name(mods_dir)).collect();
         names.sort_by_key(|name| name.to_lowercase());
@@ -128,6 +146,7 @@ pub async fn state(State(state): State<Shared>) -> ApiResult<Json<StateResponse>
         explicit: state.explicit,
         candidates,
         mods,
+        missing: missing.into_iter().map(|m| MissingInfo { unique_id: m.unique_id, needed_by: m.needed_by, nexus_id: m.nexus_id }).collect(),
         jobs: state.jobs.snapshot(),
         warnings: scan.errors,
         cookie: state.nexus.cookie_source(),
@@ -307,6 +326,36 @@ pub async fn add(State(state): State<Shared>, Json(request): Json<AddRequest>) -
         let result = manager.add_nexus(&id, &progress).await;
         progress.emit(Event::Done);
         state.jobs.finish_with(job, 0, result.map(|added| describe(&manager, &added)));
+        state.jobs.complete(job);
+    });
+    Ok(Json(job))
+}
+
+#[derive(Deserialize)]
+pub struct DependenciesRequest {
+    ids: Vec<String>,
+}
+
+/// Installs the missing mods named by `ids`, the page only offers the ones the user picked
+pub async fn install_dependencies(State(state): State<Shared>, Json(request): Json<DependenciesRequest>) -> ApiResult<Json<usize>> {
+    let manager = manager(&state)?;
+    let mods = manager.mods().await.map_err(|e| server_error(&e))?;
+    let wanted: Vec<Missing> = manager.missing_dependencies(&mods).await.into_iter()
+        .filter(|missing| request.ids.iter().any(|id| id.eq_ignore_ascii_case(&missing.unique_id)))
+        .collect();
+    if wanted.is_empty() {
+        return Err(bad_request("No missing dependencies selected"));
+    }
+    let job = state.jobs.start("Install dependencies", wanted.iter().map(|missing| missing.unique_id.clone()).collect());
+    tokio::spawn(async move {
+        let _turn = state.work.lock().await;
+        for (index, missing) in wanted.iter().enumerate() {
+            state.jobs.running(job, index);
+            let progress = state.jobs.progress(job, index);
+            let result = manager.install_missing(missing, &progress).await;
+            progress.emit(Event::Done);
+            state.jobs.finish_with(job, index, result.map(|added| added.map_or_else(|| "Already installed".into(), |added| describe(&manager, &added))));
+        }
         state.jobs.complete(job);
     });
     Ok(Json(job))

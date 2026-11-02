@@ -216,6 +216,25 @@ pub fn cascade<'a>(mods: &'a [Mod], targets: &[&Mod], enabled: bool, mods_dir: &
     chosen
 }
 
+/// The `UniqueID`s that enabled mods can't work without and no installed mod, enabled or not, provides,
+/// each with the mods that need it
+pub fn missing<'a>(mods: &'a [Mod], mods_dir: &Path) -> Vec<(String, Vec<&'a Mod>)> {
+    let mut found: Vec<(String, Vec<&Mod>)> = Vec::new();
+    for m in mods.iter().filter(|m| !m.is_disabled(mods_dir)) {
+        for id in m.manifest.required_ids() {
+            if mods.iter().any(|other| other.manifest.unique_id.as_deref().is_some_and(|own| own.eq_ignore_ascii_case(id))) {
+                continue;
+            }
+            match found.iter_mut().find(|(known, _)| known.eq_ignore_ascii_case(id)) {
+                Some((_, needed_by)) if needed_by.iter().any(|other| other.path == m.path) => {}
+                Some((_, needed_by)) => needed_by.push(m),
+                None => found.push((id.to_string(), vec![m])),
+            }
+        }
+    }
+    found
+}
+
 /// The enabled mods that can't work without `of`, so they go off with it
 pub fn dependents<'a>(mods: &'a [Mod], of: &Mod, mods_dir: &Path) -> Vec<&'a Mod> {
     cascade(mods, &[of], false, mods_dir).into_iter().filter(|m| m.path != of.path).collect()

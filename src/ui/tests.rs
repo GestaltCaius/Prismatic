@@ -308,3 +308,12 @@ async fn disabling_a_mod_hides_it_from_updates_and_warns_about_the_mods_that_nee
     assert_eq!(post(&base, &token, "/api/enable", serde_json::json!({"paths": [".Pack"], "enabled": true})).await.0, 204);
     assert!(dir.join("Fake/manifest.json").is_file() && dir.join("Pack/manifest.json").is_file(), "the mod it needs comes on too");
 }
+
+#[tokio::test]
+async fn dependencies_with_nothing_missing_are_refused_and_the_state_has_no_missing_list() {
+    let (port, token, _dir) = serve().await;
+    let base = format!("http://127.0.0.1:{port}");
+
+    assert_eq!(state(&base, &token).await["missing"], serde_json::json!([]));
+    assert_eq!(post(&base, &token, "/api/dependencies", serde_json::json!({"ids": ["x.nothing"]})).await.0, 400);
+}
