@@ -43,15 +43,28 @@ fn first_existing(candidates: &[PathBuf]) -> Result<PathBuf> {
     ))
 }
 
+/// Every usual `Mods` folder for this system, found or not
+pub fn default_candidates() -> Vec<PathBuf> {
+    candidates(std::env::consts::OS, home_dir().as_deref())
+}
+
+/// A typed path with a leading `~` standing for the home folder
+pub fn expand_home(input: &str) -> PathBuf {
+    match (input.strip_prefix('~'), home_dir()) {
+        (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with(['/', '\\']) => home.join(rest.trim_start_matches(['/', '\\'])),
+        _ => PathBuf::from(input),
+    }
+}
+
 /// The first usual `Mods` folder that exists on this machine
 pub fn default_mods_dir() -> Result<PathBuf> {
-    first_existing(&candidates(std::env::consts::OS, home_dir().as_deref()))
+    first_existing(&default_candidates())
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use super::{candidates, first_existing};
+    use super::{candidates, expand_home, first_existing};
     use crate::testutil::scratch_dir;
 
     #[test]
@@ -69,6 +82,15 @@ mod tests {
     #[test]
     fn home_based_systems_have_no_candidates_without_a_home() {
         assert!(candidates("linux", None).is_empty());
+    }
+
+    #[test]
+    fn a_leading_tilde_means_the_home_folder() {
+        let home = std::env::home_dir().unwrap();
+        assert_eq!(expand_home("~"), home);
+        assert_eq!(expand_home("~/Games/Mods"), home.join("Games/Mods"));
+        assert_eq!(expand_home("/opt/~/Mods"), Path::new("/opt/~/Mods"));
+        assert_eq!(expand_home("~other/Mods"), Path::new("~other/Mods"));
     }
 
     #[test]

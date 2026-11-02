@@ -87,6 +87,19 @@
   <div class="banner" id="warnings" aria-live="polite"></div>
 
   <section>
+    <h2>Mods folder</h2>
+    <div id="folderStatus" aria-live="polite"></div>
+    <p class="muted">The <code>Mods</code> folder inside your Stardew Valley folder. Pick one of the usual places or type the full path.
+      It is remembered in this browser, unless the program was started with <code>-d</code>, which always wins.</p>
+    <form class="row grow" id="folderForm">
+      <input type="text" id="folderValue" list="folderChoices" autocomplete="off" placeholder="/path/to/Stardew Valley/Mods" aria-label="Mods folder">
+      <datalist id="folderChoices"></datalist>
+      <button class="primary" type="submit">Use this folder</button>
+      <button type="button" id="folderDefault">Use the usual one</button>
+    </form>
+  </section>
+
+  <section>
     <h2>Nexus cookie</h2>
     <div id="cookieStatus" aria-live="polite">checking</div>
     <p class="muted">Downloads from Nexus Mods need your <code>nexusmods_session</code> cookie. Prismatic tries the NEXUS_COOKIE variable, then your browser's cookies.
@@ -104,7 +117,7 @@
     </div>
   </section>
 
-  <section>
+  <section data-needs-folder>
     <h2>Installed mods</h2>
     <div class="row grow">
       <input type="search" id="filter" placeholder="Filter by name or author" aria-label="Filter mods">
@@ -126,7 +139,7 @@
     </div>
   </section>
 
-  <section>
+  <section data-needs-folder>
     <h2>Add a mod</h2>
     <form class="row grow" id="addForm">
       <input type="text" id="addUrl" placeholder="https://www.nexusmods.com/stardewvalley/mods/3109" aria-label="Nexus Mods page URL">
@@ -134,7 +147,7 @@
     </form>
   </section>
 
-  <section>
+  <section data-needs-folder>
     <h2>Import a mod list</h2>
     <p class="muted">Choose a file made with Export (or <code>prismatic export</code>). Mods are installed at their latest version.</p>
     <div class="row"><input type="file" id="importFile" accept=".json,application/json" aria-label="Mod list file"></div>
@@ -151,7 +164,7 @@
     </div>
   </section>
 
-  <section>
+  <section data-needs-folder>
     <h2>Activity</h2>
     <div id="jobs" class="muted">Nothing yet.</div>
   </section>
@@ -292,7 +305,11 @@ function renderCookie(source) {
 let lastModsJson = '';
 async function refresh() {
   const data = await api('/api/state');
-  $('modsDir').textContent = data.mods_dir;
+  $('modsDir').textContent = data.mods_dir || 'No mods folder yet';
+  document.querySelectorAll('[data-needs-folder]').forEach((section) => { section.hidden = !data.mods_dir; });
+  $('folderStatus').textContent = data.mods_dir ? '' : 'Prismatic could not find your Stardew Valley Mods folder. Choose it below.';
+  if (document.activeElement !== $('folderValue')) $('folderValue').value = data.mods_dir || '';
+  $('folderChoices').replaceChildren(...data.candidates.map((c) => el('option', { value: c.path, label: c.found ? 'found' : 'not found' })));
   state.jobs = data.jobs;
   const warnings = $('warnings');
   warnings.textContent = data.warnings.length ? 'Some mods could not be read and are not listed:\n' + data.warnings.join('\n') : '';
@@ -308,6 +325,7 @@ async function refresh() {
   const running = data.jobs.some((j) => !j.finished);
   if (running && !timer) timer = setInterval(() => guarded(refresh), 700);
   if (!running && timer) { clearInterval(timer); timer = null; }
+  return data;
 }
 
 async function startJob(path, body) {
@@ -342,6 +360,25 @@ $('addForm').addEventListener('submit', async (e) => {
   await startJob('/api/add', { url: $('addUrl').value });
   $('addUrl').value = '';
 });
+
+async function useFolder(path) {
+  await api('/api/folder', 'POST', { path });
+  state.selected.clear();
+  state.updates = {};
+  await refresh();
+}
+$('folderForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  guarded(async () => {
+    const path = $('folderValue').value.trim();
+    await useFolder(path);
+    try { localStorage.setItem('prismatic.folder', path); } catch { /* storage may be blocked */ }
+  });
+});
+$('folderDefault').addEventListener('click', () => guarded(async () => {
+  await useFolder(null);
+  try { localStorage.removeItem('prismatic.folder'); } catch { /* storage may be blocked */ }
+}));
 
 $('cookieForm').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -393,7 +430,17 @@ $('importGo').addEventListener('click', async () => {
     let saved = null;
     try { saved = localStorage.getItem('prismatic.cookie'); } catch { /* storage may be blocked */ }
     if (saved) await api('/api/cookie', 'POST', { value: saved }).catch(() => {});
-    await refresh();
+    const data = await refresh();
+    let folder = null;
+    try { folder = localStorage.getItem('prismatic.folder'); } catch { /* storage may be blocked */ }
+    if (folder && !data.explicit && folder !== data.mods_dir) {
+      try {
+        await useFolder(folder);
+      } catch (e) {
+        try { localStorage.removeItem('prismatic.folder'); } catch { /* storage may be blocked */ }
+        showError('Could not use the remembered folder ' + folder + ': ' + e.message);
+      }
+    }
   });
 })();
 </script>
