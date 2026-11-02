@@ -377,4 +377,73 @@ mod tests {
         assert!([key("Nexus", "???")].preferred().is_none());
         assert!([key("GitHub", "/repo"), key("GitHub", "a/b/c")].preferred().is_none());
     }
+
+    mod properties {
+        use std::path::PathBuf;
+        use proptest::prelude::*;
+        use crate::manifest::{cascade, parse_manifest, Mod};
+
+        proptest! {
+            #[test]
+            fn arbitrary_text_never_panics_the_manifest_parser(text in any::<String>()) {
+                let _ = parse_manifest(&text);
+            }
+
+            #[test]
+            fn a_name_survives_comment_and_trailing_comma_handling(name in any::<String>()) {
+                let quoted = serde_json::to_string(&name).unwrap();
+                let manifest = parse_manifest(&format!("{{\"Name\": {quoted},}}")).unwrap();
+                prop_assert_eq!(manifest.name, Some(name));
+            }
+
+            #[test]
+            fn malformed_dependency_lists_never_panic(raw in "[\\[\\]{},:\" a-zA-Z0-9.]{0,60}") {
+                for field in ["Dependencies", "ContentPackFor"] {
+                    if let Ok(manifest) = parse_manifest(&format!("{{\"{field}\": {raw}}}")) {
+                        let _ = manifest.required_ids();
+                    }
+                }
+            }
+
+            /// For any graph of mods, what `cascade` returns is closed: nothing enabled is left needing a mod that goes off,
+            /// and nothing that comes on is left needing a mod that stays off while some copy of it exists
+            #[test]
+            fn cascade_follows_every_requirement(
+                needs in proptest::collection::vec(proptest::collection::vec(0usize..8, 0..3), 2..8),
+                off in proptest::collection::vec(any::<bool>(), 8),
+                target in 0usize..8,
+                enable in any::<bool>(),
+            ) {
+                let dir = PathBuf::from("/mods");
+                let mods: Vec<Mod> = needs.iter().enumerate().map(|(i, deps)| {
+                    let dependencies: Vec<String> = deps.iter().map(|d| format!(r#"{{"UniqueID":"m{}"}}"#, d % needs.len())).collect();
+                    let text = format!(r#"{{"Name":"m{i}","UniqueID":"m{i}","Dependencies":[{}]}}"#, dependencies.join(","));
+                    let folder = if off[i] { format!(".m{i}") } else { format!("m{i}") };
+                    Mod { path: dir.join(folder), manifest: parse_manifest(&text).unwrap() }
+                }).collect();
+                let target = &mods[target % mods.len()];
+
+                let changed = cascade(&mods, &[target], enable, &dir);
+
+                let is_changed = |m: &Mod| changed.iter().any(|c| c.path == m.path);
+                for m in &changed {
+                    prop_assert_eq!(m.is_disabled(&dir), enable, "only mods that are not yet as asked change");
+                }
+                for m in &mods {
+                    let id = m.manifest.unique_id.as_deref().unwrap();
+                    if enable {
+                        for required in m.manifest.required_ids().into_iter().filter(|_| is_changed(m)) {
+                            let provided = mods.iter().any(|p| p.manifest.unique_id.as_deref() == Some(required) && (!p.is_disabled(&dir) || is_changed(p)));
+                            prop_assert!(provided, "{id} comes on but needs {required}");
+                        }
+                    } else if !m.is_disabled(&dir) && !is_changed(m) {
+                        for required in m.manifest.required_ids() {
+                            let goes_off = changed.iter().any(|c| c.manifest.unique_id.as_deref() == Some(required));
+                            prop_assert!(!goes_off, "{id} stays on but needs {required}, which goes off");
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

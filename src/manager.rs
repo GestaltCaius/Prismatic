@@ -10,6 +10,7 @@ use crate::progress::{Event, Progress};
 use crate::{github, http, install, smapi};
 
 /// What the next update should do about one mod
+#[derive(Debug)]
 pub enum Verdict {
     Update,
     UpToDate,
@@ -18,6 +19,7 @@ pub enum Verdict {
     Unsupported(&'static str),
 }
 
+#[derive(Debug)]
 pub enum UpdateResult {
     Success {
         new_version: String,
@@ -27,6 +29,7 @@ pub enum UpdateResult {
 }
 
 /// Mods an install put on disk
+#[derive(Debug)]
 pub struct Added {
     pub mods: Vec<Mod>,
     pub warnings: Vec<String>,
@@ -61,6 +64,12 @@ pub struct Manager {
     nexus: Arc<Nexus>,
     /// Nexus ids SMAPI's database knows, by lowercase `UniqueID`. `None` is a mod it doesn't know.
     known_ids: Mutex<HashMap<String, Option<String>>>,
+}
+
+impl std::fmt::Debug for Manager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Manager").field("mods_dir", &self.mods_dir).finish_non_exhaustive()
+    }
 }
 
 /// Version in the manifest of a freshly installed mod, picking the one matching `unique_id` out of a pack

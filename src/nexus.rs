@@ -23,6 +23,13 @@ pub struct Nexus {
     slots: Semaphore,
 }
 
+/// Left out on purpose: the cookie is a credential and must not end up in a log
+impl std::fmt::Debug for Nexus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Nexus").finish_non_exhaustive()
+    }
+}
+
 /// `nexusmods_session` out of a bare value or a full cookie string
 fn session_from(value: &str) -> String {
     value.split(';')
@@ -140,6 +147,28 @@ impl Nexus {
 impl Default for Nexus {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod properties {
+    use proptest::prelude::*;
+    use super::{is_nexus_id, mod_id_from_url};
+
+    proptest! {
+        #[test]
+        fn an_id_taken_from_a_url_is_a_real_id_that_was_in_it(url in any::<String>()) {
+            if let Some(id) = mod_id_from_url(&url) {
+                prop_assert!(is_nexus_id(id) && url.contains(id));
+            }
+        }
+
+        #[test]
+        fn pages_of_a_mod_give_its_id(id in 1u32..10_000_000, tail in "([?#/][a-z=&0-9]{0,12})?") {
+            let url = format!("https://www.nexusmods.com/stardewvalley/mods/{id}{tail}");
+            let expected = id.to_string();
+            prop_assert_eq!(mod_id_from_url(&url), Some(expected.as_str()));
+        }
     }
 }
 

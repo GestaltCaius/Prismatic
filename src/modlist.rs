@@ -75,6 +75,7 @@ pub(crate) fn entries_from(mods: &[Mod], resolved: &HashMap<String, String>) -> 
 }
 
 /// What export found out about the installed mods
+#[derive(Debug)]
 pub struct Collected {
     pub entries: Vec<Entry>,
     /// Names of mods that have no usable key at all
@@ -120,6 +121,18 @@ pub fn is_installed(mods: &[Mod], entry: &Entry) -> bool {
             .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b));
         same_id || m.manifest.update_keys.iter().any(|k| entry.keys.iter().any(|e| e.is_source(&k.source) && e.id == k.id))
     })
+}
+
+#[cfg(test)]
+mod properties {
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn arbitrary_text_never_panics_the_list_parser(text in any::<String>()) {
+            let _ = super::parse_list(&text);
+        }
+    }
 }
 
 #[cfg(test)]
