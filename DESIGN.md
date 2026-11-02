@@ -133,7 +133,7 @@ Flat. Hierarchy comes from borders and tonal layers (neutral page, surface panel
 
 - **Panel:** parchment surface with a 2px wood border.
 - **Buttons:** one primary per group (green), the rest on the surface color. The Nexus cookie panel is always visible, with the active source shown above its field. Primary and secondary buttons are 7px by 12px.
-- **Mod rows:** the whole row toggles its checkbox (links and controls excepted). The checkbox stays the real control for keyboard and screen readers. Hover shows a 4px wood bar on the left edge, a selected row a green one, so no new text and background pairs are introduced. Nexus and GitHub update keys are links in the muted text color, underlined.
+- **Mod rows:** the whole row toggles its checkbox (links and controls excepted). The checkbox stays the real control for keyboard and screen readers. Hover shows a 4px wood bar on the left edge, a selected row a green one, so no new text and background pairs are introduced. Nexus and GitHub update keys are links in the muted text color, underlined. Authors link to their Nexus profile.
 - **Inputs:** neutral fill, 1px wood border, always with an `aria-label`.
 - **Badges:** outlined pills colored by state (success, warning, error).
 - **Focus:** a 3px on-surface outline on every focusable element.

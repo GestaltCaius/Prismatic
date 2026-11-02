@@ -150,7 +150,7 @@ pub async fn add(manager: &Manager, source: &str) -> Result<()> {
 
 /// Fails when an update was attempted and went wrong. Mods without a usable source are only reported.
 pub async fn update(manager: &Arc<Manager>, force: bool) -> Result<ExitCode> {
-    let mods = scan(manager).await?;
+    let mods = manager.resolve_sources(scan(manager).await?).await;
     let verdicts = manager.verdicts(&mods, force).await?;
     let multi = MultiProgress::new();
     let (mut updated, mut failed, mut skipped, mut unsupported) = (0, 0, 0, 0);
@@ -169,6 +169,7 @@ pub async fn update(manager: &Arc<Manager>, force: bool) -> Result<ExitCode> {
                 skipped += 1;
                 multi.suspend(|| eprintln!("{name}: Already up to date"));
             }
+            Verdict::Together(leader) => multi.suspend(|| eprintln!("{name}: Same download as {leader}")),
             Verdict::Unsupported(reason) => {
                 unsupported += 1;
                 multi.suspend(|| eprintln!("{name}: {reason}"));

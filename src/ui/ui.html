@@ -211,6 +211,13 @@ function sourceLink(key) {
 }
 const sourceLinks = (keys) => keys.flatMap((key, i) => (i ? [', ', sourceLink(key)] : [sourceLink(key)]));
 
+/** Authors link to their Nexus profile, which is addressed by name. Several authors are written "A, B" or "A & B". */
+function authorLinks(m) {
+  const links = (m.author || '').split(/\s*(?:,|&|\band\b)\s*/).filter(Boolean).map((name) =>
+    el('a', { href: 'https://www.nexusmods.com/profile/' + encodeURIComponent(name) + '?gameId=1303', target: '_blank', rel: 'noopener noreferrer' }, name));
+  return links.flatMap((link, i) => (i ? [', ', link] : [link]));
+}
+
 /** Clicking anywhere on the row toggles its checkbox, except on links and controls or while selecting text */
 function toggleOnRowClick(row, box) {
   row.addEventListener('click', (e) => {
@@ -235,7 +242,7 @@ function renderMods() {
       el('td', { title: m.description || '' }, m.name, el('div', { class: 'muted' }, m.path)),
       el('td', {}, m.version || ''),
       el('td', {}, update ? el('span', { class: 'badge update' }, update) : (m.updatable ? '' : el('span', { class: 'muted' }, 'no source'))),
-      el('td', {}, m.author || ''),
+      el('td', {}, ...authorLinks(m)),
       el('td', { class: 'key' }, ...sourceLinks(m.keys)));
     toggleOnRowClick(row, box);
     return row;

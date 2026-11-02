@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 use super::jobs::{Job, Status};
 use super::Shared;
 
+/// How long `state` waits for SMAPI to name the sources of mods whose manifests have none
+const SOURCE_LOOKUP: std::time::Duration = std::time::Duration::from_secs(3);
+
 type ApiResult<T> = std::result::Result<T, (StatusCode, String)>;
 
 fn bad_request(message: &str) -> (StatusCode, String) {
@@ -51,7 +54,15 @@ pub struct StateResponse {
 pub async fn state(State(state): State<Shared>) -> ApiResult<Json<StateResponse>> {
     let mods_dir = state.manager.mods_dir();
     let scan = state.manager.scan().await.map_err(|e| server_error(&e))?;
-    let mut mods: Vec<ModInfo> = scan.mods.iter().map(|m| ModInfo {
+    // The lookup is cached and runs on in the background when SMAPI is slow, so the page is never held up
+    // for long and a later poll finds the answer
+    let manager = state.manager.clone();
+    let lookup = tokio::spawn({
+        let mods = scan.mods.clone();
+        async move { manager.resolve_sources(mods).await }
+    });
+    let found = tokio::time::timeout(SOURCE_LOOKUP, lookup).await.ok().and_then(Result::ok);
+    let mut mods: Vec<ModInfo> = found.as_ref().unwrap_or(&scan.mods).iter().map(|m| ModInfo {
         path: m.relative(mods_dir),
         name: m.display_name(mods_dir),
         version: m.manifest.version.clone(),
@@ -110,6 +121,7 @@ pub async fn forget_cookie(State(state): State<Shared>) -> StatusCode {
 /// Mods whose path is in `paths`, or all of them when `paths` is `None`
 async fn select_mods(state: &Shared, paths: Option<&[String]>) -> ApiResult<Vec<Mod>> {
     let mods = state.manager.mods().await.map_err(|e| server_error(&e))?;
+    let mods = state.manager.resolve_sources(mods).await;
     Ok(mods.into_iter()
         .filter(|m| paths.is_none_or(|paths| paths.contains(&m.relative(state.manager.mods_dir()))))
         .collect())
@@ -159,6 +171,7 @@ async fn run_update(state: &Shared, job: usize, mods: &[Mod]) {
                 }
             }
             Verdict::UpToDate => state.jobs.finish(job, index, Status::Skipped, "Already up to date".into()),
+            Verdict::Together(leader) => state.jobs.finish(job, index, Status::Skipped, format!("Same download as {leader}")),
             Verdict::Unsupported(reason) => state.jobs.finish(job, index, Status::Failed, reason.into()),
         }
     }

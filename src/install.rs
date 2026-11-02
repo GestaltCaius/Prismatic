@@ -31,9 +31,9 @@ pub fn extract_new(mods_dir: &Path, archive: &[u8]) -> Result<HashSet<String>> {
 }
 
 /// Replaces the mod in `mod_path` with the one in `archive`, which must hold exactly one top-level folder.
-/// The old folder moves to `<mods_dir>/.old/<folder> - <version>` and its `config.json` or `config` is copied
-/// into the new one. Returns the new folder, which may be named differently. If extraction fails the old
-/// folder is put back.
+/// A mod that belongs to a pack sits inside the folder the archive is rooted at, and that whole folder is replaced.
+/// The old folder moves to `<mods_dir>/.old/<folder> - <version>`, and the `config.json` or `config` of each mod in it
+/// is copied into the new one. Returns the new folder. If extraction fails the old folder is put back.
 pub fn replace_mod(mods_dir: &Path, mod_path: &Path, version: Option<&str>, archive: &[u8]) -> Result<PathBuf> {
     let mut zip = ZipArchive::new(Cursor::new(archive))?;
     if zip.is_empty() {
@@ -43,33 +43,68 @@ pub fn replace_mod(mods_dir: &Path, mod_path: &Path, version: Option<&str>, arch
     let (Some(root), None) = (roots.next(), roots.next()) else {
         bail!("Zip archive must contain exactly one item in the root");
     };
-    let parent = mod_path.parent().ok_or_else(|| anyhow!("Mod path has no parent directory"))?;
-    let dir_name = mod_path.file_name().ok_or_else(|| anyhow!("Mod path has no directory name"))?;
+    let target = mod_path.ancestors()
+        .take_while(|dir| dir.starts_with(mods_dir) && *dir != mods_dir)
+        .find(|dir| dir.file_name().is_some_and(|name| name == root.as_str()))
+        .unwrap_or(mod_path);
+    if target == mod_path && mod_path.file_name().is_some_and(|name| name != root.as_str()) && zip.file_names().filter(|name| name.ends_with("manifest.json")).count() > 1 {
+        bail!("This download is a pack of mods, but the mod is not in a folder named {root}. Update it by hand or rename the pack folder");
+    }
+    let parent = target.parent().ok_or_else(|| anyhow!("Mod path has no parent directory"))?;
+    let dir_name = target.file_name().ok_or_else(|| anyhow!("Mod path has no directory name"))?;
     let new_dir = parent.join(&root);
     let old_dir = mods_dir.join(OLD_DIR);
     let backup = old_dir.join(format!("{} - {}", dir_name.to_string_lossy(), version.unwrap_or("unknown")));
     if backup.exists() {
         bail!("File exists: {}", backup.display());
     }
-    if new_dir != mod_path && new_dir.exists() {
+    if new_dir != target && new_dir.exists() {
         bail!("File exists: {root}");
     }
 
     fs::create_dir_all(&old_dir)?;
-    fs::rename(mod_path, &backup)?;
+    fs::rename(target, &backup)?;
     if let Err(e) = zip.extract(parent) {
         let _ = fs::remove_dir_all(&new_dir);
-        let _ = fs::rename(&backup, mod_path);
+        let _ = fs::rename(&backup, target);
         return Err(e.into());
     }
-    for file in backup.read_dir()?.flatten().filter(|file| ["config.json", "config"].contains(&&*file.file_name().to_string_lossy())) {
-        let new_path = new_dir.join(file.file_name());
-        if new_path.exists() {
-            fs::rename(&new_path, new_path.with_file_name(format!("{}.new", file.file_name().to_string_lossy())))?;
-        }
-        copy(&file.path(), &new_path)?;
-    }
+    carry_configs(&backup, &new_dir)?;
     Ok(new_dir)
+}
+
+/// Folders at or below `dir` that hold a manifest, found without reading it so a broken manifest doesn't matter
+fn mod_dirs(dir: &Path, found: &mut Vec<PathBuf>) {
+    if dir.join("manifest.json").is_file() {
+        found.push(dir.to_path_buf());
+        return;
+    }
+    for entry in dir.read_dir().into_iter().flatten().flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) && !entry.file_name().to_string_lossy().starts_with('.') {
+            mod_dirs(&entry.path(), found);
+        }
+    }
+}
+
+/// Copies the config of the old folder and of every mod below it into the same place in the new one
+fn carry_configs(backup: &Path, new_dir: &Path) -> Result<()> {
+    let mut dirs = vec![backup.to_path_buf()];
+    mod_dirs(backup, &mut dirs);
+    dirs.dedup();
+    for old in dirs {
+        let new_root = new_dir.join(old.strip_prefix(backup)?);
+        if !new_root.is_dir() {
+            continue;
+        }
+        for file in old.read_dir()?.flatten().filter(|file| ["config.json", "config"].contains(&&*file.file_name().to_string_lossy())) {
+            let new_path = new_root.join(file.file_name());
+            if new_path.exists() {
+                fs::rename(&new_path, new_path.with_file_name(format!("{}.new", file.file_name().to_string_lossy())))?;
+            }
+            copy(&file.path(), &new_path)?;
+        }
+    }
+    Ok(())
 }
 
 fn copy(from: &Path, to: &Path) -> Result<()> {
@@ -136,6 +171,26 @@ mod tests {
     }
 
     #[test]
+    fn updating_a_mod_of_a_pack_replaces_the_whole_pack_and_keeps_each_mods_config() {
+        let mods = scratch_dir();
+        installed(&mods, "Pack/[CP] Pack", "cp config");
+        installed(&mods, "Pack/[FTM] Pack", "ftm config");
+        let zip = archive(&[
+            ("Pack/[CP] Pack/manifest.json", "new cp"), ("Pack/[CP] Pack/config.json", "default"),
+            ("Pack/[FTM] Pack/manifest.json", "new ftm"),
+        ]);
+
+        let new_dir = replace_mod(&mods, &mods.join("Pack/[CP] Pack"), Some("1.0"), &zip).unwrap();
+
+        assert_eq!(new_dir, mods.join("Pack"));
+        assert!(!mods.join("Pack/Pack").exists(), "must not nest a second copy of the pack");
+        assert_eq!(fs::read_to_string(new_dir.join("[CP] Pack/manifest.json")).unwrap(), "new cp");
+        assert_eq!(fs::read_to_string(new_dir.join("[CP] Pack/config.json")).unwrap(), "cp config");
+        assert_eq!(fs::read_to_string(new_dir.join("[FTM] Pack/config.json")).unwrap(), "ftm config");
+        assert_eq!(fs::read_to_string(mods.join(".old/Pack - 1.0/[FTM] Pack/manifest.json")).unwrap(), "old");
+    }
+
+    #[test]
     fn a_renamed_root_that_already_exists_leaves_the_old_mod_in_place() {
         let mods = scratch_dir();
         installed(&mods, "Mod", "mine");
@@ -147,6 +202,18 @@ mod tests {
         assert!(error.to_string().contains("File exists"), "{error}");
         assert_eq!(fs::read_to_string(mods.join("Mod/manifest.json")).unwrap(), "old");
         assert!(!mods.join(".old").exists());
+    }
+
+    #[test]
+    fn a_pack_download_is_refused_for_a_mod_outside_a_folder_named_like_its_root() {
+        let mods = scratch_dir();
+        installed(&mods, "Renamed/[CP] Pack", "mine");
+        let zip = archive(&[("Pack/[CP] Pack/manifest.json", "new"), ("Pack/[FTM] Pack/manifest.json", "new")]);
+
+        let error = replace_mod(&mods, &mods.join("Renamed/[CP] Pack"), Some("1.0"), &zip).unwrap_err();
+
+        assert!(error.to_string().contains("pack of mods"), "{error}");
+        assert_eq!(fs::read_to_string(mods.join("Renamed/[CP] Pack/manifest.json")).unwrap(), "old");
     }
 
     #[test]

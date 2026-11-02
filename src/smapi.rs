@@ -5,9 +5,10 @@ use crate::manifest::{Mod, UpdateKeys};
 
 const MODS_API: &str = "https://smapi.io/api/v3.0/mods";
 const API_VERSION: &str = "4.0.7"; // TODO: Use actual version
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 async fn query(http: &wreq::Client, body: Value) -> Result<Vec<Value>> {
-    let response = http.post(MODS_API).json(&body).send().await?.error_for_status()?.json::<Value>().await?;
+    let response = http.post(MODS_API).json(&body).timeout(TIMEOUT).send().await?.error_for_status()?.json::<Value>().await?;
     match response {
         Value::Array(entries) => Ok(entries),
         _ => Err(anyhow!("Expected array")),

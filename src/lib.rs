@@ -9,6 +9,7 @@ pub mod manager;
 pub mod manifest;
 pub mod modlist;
 pub mod nexus;
+pub mod paths;
 pub mod progress;
 mod smapi;
 

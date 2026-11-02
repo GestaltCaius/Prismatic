@@ -1,13 +1,12 @@
 mod cli;
 mod ui;
 
-use std::env::home_dir;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
-use prismatic::Manager;
+use prismatic::{paths, Manager};
 use crate::cli::DEFAULT_FILE;
 use crate::ui::DEFAULT_PORT;
 
@@ -16,8 +15,8 @@ use crate::ui::DEFAULT_PORT;
 struct Args {
     /// Directory that contains mods
     ///
-    /// Defaults to ~/.steam/steam/steamapps/common/Stardew Valley/Mods on Unix based systems
-    /// and C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley\Mods on Windows
+    /// Defaults to the first usual Steam or GOG location that exists for your system,
+    /// e.g. ~/.steam/steam/steamapps/common/Stardew Valley/Mods on Linux
     #[clap(long, short = 'd')]
     mods_dir: Option<PathBuf>,
     /// Opens the web interface when no command is given
@@ -84,22 +83,10 @@ async fn main() -> ExitCode {
     }
 }
 
-fn default_mods_dir() -> Result<PathBuf> {
-    if cfg!(unix) {
-        home_dir()
-            .map(|home| home.join(".steam/steam/steamapps/common/Stardew Valley/Mods"))
-            .ok_or_else(|| anyhow!("Could not determine home directory, please specify the mods directory with -d <dir>"))
-    } else if cfg!(windows) {
-        Ok(PathBuf::from(r"C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley\Mods"))
-    } else {
-        Err(anyhow!("Could not determine mods directory, please specify with -d <dir>"))
-    }
-}
-
 /// Exit code: 0 on success, 1 on any error or when an update or import left something undone
 async fn main_inner() -> Result<ExitCode> {
     let args = Args::parse();
-    let mods_dir = args.mods_dir.map_or_else(default_mods_dir, Ok)?;
+    let mods_dir = args.mods_dir.map_or_else(paths::default_mods_dir, Ok)?;
     let manager = Arc::new(Manager::new(mods_dir)?);
     match args.command.unwrap_or(Command::Ui { port: DEFAULT_PORT, no_open: false }) {
         Command::Import { file, all } => return cli::import(&manager, &file, all).await,
