@@ -37,7 +37,7 @@ jobs:
           - macos-26
           - macos-26-intel
           - windows-2025
-          - windows-11-arm
+          # windows-11-arm is left out: btls-sys 0.5.6 (BoringSSL) picks x86_64 assembly there and fails to link
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -82,7 +82,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The key keeps objects built against a newer glibc (BoringSSL) out of this older image.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ubuntu-22.04
 
       - name: Build
         run: cargo build --release --locked
