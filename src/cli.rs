@@ -153,7 +153,15 @@ pub async fn list(manager: &Manager) -> Result<()> {
         }
         println!();
     }
-    println!("{} mods found", mods.len());
+    let disabled = mods
+        .iter()
+        .filter(|m| m.is_disabled(manager.mods_dir()))
+        .count();
+    if disabled == 0 {
+        println!("{} mods found", mods.len());
+    } else {
+        println!("{} mods found ({disabled} disabled)", mods.len());
+    }
     Ok(())
 }
 

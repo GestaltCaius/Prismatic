@@ -10,6 +10,11 @@ use bytes::Bytes;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
+
+/// How long SMAPI is left alone after a lookup failed. The web page asks every 700ms, so without it an
+/// unreachable SMAPI would get a new request (and a new 15s wait) on every poll.
+const SMAPI_COOLDOWN: Duration = Duration::from_secs(30);
 
 /// What the next update should do about one mod
 #[derive(Debug)]
@@ -69,6 +74,9 @@ pub struct Manager {
     nexus: Arc<Nexus>,
     /// Nexus ids SMAPI's database knows, by lowercase `UniqueID`. `None` is a mod it doesn't know.
     known_ids: Mutex<HashMap<String, Option<String>>>,
+    /// When the last SMAPI lookup failed. The lock is held during a lookup, so concurrent callers wait for
+    /// its answer instead of sending the same request again.
+    smapi_failed_at: tokio::sync::Mutex<Option<Instant>>,
 }
 
 impl std::fmt::Debug for Manager {
@@ -158,6 +166,7 @@ impl Manager {
             http: http::client()?,
             nexus,
             known_ids: Mutex::default(),
+            smapi_failed_at: tokio::sync::Mutex::default(),
         })
     }
 
@@ -286,8 +295,12 @@ impl Manager {
     }
 
     /// Asks SMAPI once about the `UniqueID`s it hasn't been asked about yet and remembers the answers.
-    /// If SMAPI can't be reached nothing is remembered, so a later call asks again.
+    /// If SMAPI can't be reached nothing is remembered and it is left alone for `SMAPI_COOLDOWN`.
     async fn learn_nexus_ids(&self, ids: Vec<String>) {
+        let mut failed_at = self.smapi_failed_at.lock().await;
+        if failed_at.is_some_and(|at| at.elapsed() < SMAPI_COOLDOWN) {
+            return;
+        }
         let to_ask: Vec<String> = {
             let known = self
                 .known_ids
@@ -302,19 +315,23 @@ impl Manager {
         if to_ask.is_empty() {
             return;
         }
-        if let Ok(found) = smapi::nexus_ids(
+        match smapi::nexus_ids(
             &self.http,
             &to_ask.iter().map(String::as_str).collect::<Vec<_>>(),
         )
         .await
         {
-            let mut known = self
-                .known_ids
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            for id in &to_ask {
-                known.insert(id.to_lowercase(), found.get(id).cloned());
+            Ok(found) => {
+                *failed_at = None;
+                let mut known = self
+                    .known_ids
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                for id in &to_ask {
+                    known.insert(id.to_lowercase(), found.get(id).cloned());
+                }
             }
+            Err(_) => *failed_at = Some(Instant::now()),
         }
     }
 
@@ -566,6 +583,15 @@ mod tests {
     fn rejects_a_missing_mods_directory() {
         let error = Manager::new(scratch_dir().join("nope")).err().unwrap();
         assert_eq!(error.to_string(), "Invalid mods directory");
+    }
+
+    #[tokio::test]
+    async fn smapi_is_left_alone_after_a_failed_lookup() {
+        let manager = Manager::new(scratch_dir()).unwrap();
+        *manager.smapi_failed_at.lock().await = Some(std::time::Instant::now());
+        manager.learn_nexus_ids(vec!["a.mod".into()]).await;
+        // Asking would have remembered an answer, even "SMAPI doesn't know it", whenever SMAPI is reachable
+        assert!(manager.known_ids.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

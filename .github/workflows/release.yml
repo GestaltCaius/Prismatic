@@ -6,13 +6,15 @@ name: release
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch: # produce binaries without cutting a tag
+  workflow_dispatch: # dry run: builds, makes the SBOM and scans, but publishes nothing
 
 permissions:
   contents: write # required to create the release and upload assets
 
 env:
   CARGO_TERM_COLOR: always
+  # A branch name can hold slashes, which would break the archive paths of a dry run
+  VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'dry-run' }}
 
 jobs:
   build:
@@ -28,12 +30,14 @@ jobs:
             os: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04-arm
+          # macOS and Windows are pinned to the newest image: the macOS binary still targets 11.0 and
+          # Windows runs any build. Windows ARM runs the x86_64 build, a native one fails in btls-sys.
           - target: aarch64-apple-darwin
-            os: macos-latest # Apple silicon
+            os: macos-26
           - target: x86_64-apple-darwin
-            os: macos-15-intel
+            os: macos-26-intel
           - target: x86_64-pc-windows-msvc
-            os: windows-latest
+            os: windows-2025
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -65,7 +69,7 @@ jobs:
           src="target/${{ matrix.target }}/release/${bin}"
           test -f "$src" || { echo "missing binary: $src"; exit 1; }
 
-          name="prismatic-${{ github.ref_name }}-${{ matrix.target }}"
+          name="prismatic-${VERSION}-${{ matrix.target }}"
           mkdir -p "dist/${name}"
           cp "$src" "dist/${name}/"
           cp README.md LICENSE "dist/${name}/"
@@ -87,7 +91,6 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/') # dispatch runs build only, no release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -104,7 +107,7 @@ jobs:
       - name: SBOM
         run: |
           cargo cyclonedx --format json --target all
-          mv prismatic.cdx.json "dist/prismatic-${{ github.ref_name }}.cdx.json"
+          mv prismatic.cdx.json "dist/prismatic-${VERSION}.cdx.json"
 
       # The release is not published if a shipped binary or the SBOM has a known vulnerability.
       - name: Scan the binaries and the SBOM
@@ -119,7 +122,8 @@ jobs:
       - name: Checksums
         run: cd dist && sha256sum * | tee SHA256SUMS
 
-      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+      - if: startsWith(github.ref, 'refs/tags/') # a dry run stops here
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: dist/*
           generate_release_notes: true
