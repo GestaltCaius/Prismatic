@@ -6,7 +6,6 @@
     ".": {
       "release-type": "rust",
       "package-name": "prismatic",
-      "release-as": "0.1.0",
       "bump-minor-pre-major": true,
       "changelog-sections": [
         { "type": "feat", "section": "Features" },
