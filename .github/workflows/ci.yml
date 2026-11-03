@@ -27,6 +27,9 @@ jobs:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    # GitHub's free macOS runners are often unavailable and these jobs are not required checks. A failure
+    # there still shows as a red job, but it no longer turns the whole run, and the README badge, red.
+    continue-on-error: ${{ startsWith(matrix.os, 'macos') }}
     strategy:
       fail-fast: false # one platform failing should not hide results for the others
       matrix:
