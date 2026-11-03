@@ -5,6 +5,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7 # a freshly published version waits a week (security updates are not delayed)
     groups:
       cargo:
         patterns: ["*"]
@@ -13,6 +15,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7 # a freshly published version waits a week (security updates are not delayed)
     groups:
       actions:
         patterns: ["*"]
