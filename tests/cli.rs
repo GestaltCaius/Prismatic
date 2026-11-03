@@ -84,6 +84,21 @@ fn mods_without_a_usable_source_are_reported_but_are_not_failures() {
 }
 
 #[test]
+fn disable_and_enable_without_names_need_a_terminal_to_choose_from() {
+    let dir = mods_dir(&[("Good", r#"{"Name":"Good"}"#)]);
+    for verb in ["disable", "enable"] {
+        let output = run(&dir, &[verb]);
+        assert_eq!(output.status.code(), Some(1), "{verb}");
+        let errors = stderr(&output);
+        assert!(
+            errors.contains(&format!("Name the mods to {verb}")),
+            "{errors}"
+        );
+    }
+    assert!(dir.join("Good").is_dir(), "nothing was renamed");
+}
+
+#[test]
 fn commands_that_cannot_do_their_job_exit_1() {
     let dir = mods_dir(&[("Good", r#"{"Name":"Good"}"#)]);
     assert_eq!(

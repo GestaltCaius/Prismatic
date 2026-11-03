@@ -91,7 +91,21 @@ fn pick<T>(items: Vec<T>, label: impl Fn(&T) -> String, prompt: &str, all: bool)
     if all || items.is_empty() || !interactive() {
         return Ok(items);
     }
-    let defaults: Vec<usize> = (0..items.len()).collect();
+    ask(items, label, prompt, true)
+}
+
+/// Shows `items` in a list to choose from. `selected` is whether the rows start selected.
+fn ask<T>(
+    items: Vec<T>,
+    label: impl Fn(&T) -> String,
+    prompt: &str,
+    selected: bool,
+) -> Result<Vec<T>> {
+    let defaults: Vec<usize> = if selected {
+        (0..items.len()).collect()
+    } else {
+        Vec::new()
+    };
     let rows: Vec<Row<T>> = items
         .into_iter()
         .map(|item| {
@@ -183,14 +197,56 @@ fn matching<'a>(mods: &'a [Mod], mods_dir: &Path, query: &str) -> Vec<&'a Mod> {
         .collect()
 }
 
+/// The folders of the mods chosen from a list, for `disable` or `enable` given no names.
+/// Nothing starts selected: confirming an untouched list must not switch every mod off.
+fn choose_mods(mods: &[Mod], mods_dir: &Path, enabled: bool) -> Result<Vec<String>> {
+    let verb = if enabled { "enable" } else { "disable" };
+    if !interactive() {
+        bail!("Name the mods to {verb}, or run it in a terminal to choose from a list");
+    }
+    let candidates: Vec<&Mod> = mods
+        .iter()
+        .filter(|m| m.is_disabled(mods_dir) == enabled)
+        .collect();
+    if candidates.is_empty() {
+        println!("No mod to {verb}");
+        return Ok(Vec::new());
+    }
+    let label = |m: &&Mod| {
+        let (name, folder) = (m.display_name(mods_dir), m.relative(mods_dir));
+        if name == folder {
+            name
+        } else {
+            format!("{name} ({folder})")
+        }
+    };
+    let prompt = format!("Mods to {verb} (space selects, enter confirms)");
+    let picked = ask(candidates, label, &prompt, false)?;
+    if picked.is_empty() {
+        println!("Nothing selected");
+    }
+    Ok(picked.iter().map(|m| m.relative(mods_dir)).collect())
+}
+
 /// Fails when a name matches no mod or several, or a folder couldn't be renamed. The other names are still handled.
 /// Disabling a mod also disables the mods that need it, enabling one also enables the mods it needs.
+/// With no names the mods are chosen from a list.
 pub async fn set_enabled(manager: &Manager, queries: &[String], enabled: bool) -> Result<ExitCode> {
-    scan(manager).await?;
     let (verb, mods_dir) = (
         if enabled { "enabled" } else { "disabled" },
         manager.mods_dir(),
     );
+    let installed = scan(manager).await?;
+    let chosen;
+    let queries = if queries.is_empty() {
+        chosen = choose_mods(&installed, mods_dir, enabled)?;
+        if chosen.is_empty() {
+            return Ok(ExitCode::SUCCESS);
+        }
+        &chosen[..]
+    } else {
+        queries
+    };
     let mut failed = false;
     for query in queries {
         // Read again every time, an earlier name may have moved this one along with it
