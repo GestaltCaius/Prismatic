@@ -1,7 +1,42 @@
-# Prismatic
-A CLI tool and a web interface for installing, updating and managing Stardew Valley mods.
+<h1 align="center">Prismatic</h1>
+<h3 align="center">Install, update and manage your Stardew Valley mods from the terminal or the browser.</h3>
 
-![The Prismatic web interface: a list of installed mods with update, disable and export buttons, then Add a mod and Import a mod list](docs/images/web-ui.png)
+---
+
+<p align="center">
+
+<a href="https://github.com/GestaltCaius/Prismatic/releases">
+<img alt="Current Release" src="https://img.shields.io/github/v/release/GestaltCaius/Prismatic?display_name=tag"/>
+</a>
+
+<a href="https://github.com/GestaltCaius/Prismatic/actions/workflows/ci.yml">
+<img alt="GitHub Actions Workflow Status" src="https://github.com/GestaltCaius/Prismatic/actions/workflows/ci.yml/badge.svg?branch=master"/>
+</a>
+
+<a href="LICENSE">
+<img alt="License" src="https://img.shields.io/github/license/GestaltCaius/Prismatic"/>
+</a>
+
+<img alt="Platforms" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey"/>
+
+</p>
+
+---
+
+<p align="center">
+<img alt="The Prismatic web interface: a list of installed mods with update, disable and export buttons, then Add a mod and Import a mod list" src="docs/images/web-ui.png" width="720"/>
+</p>
+
+Prismatic keeps your mods up to date, installs new ones from Nexus Mods, and turns them off and on without deleting
+anything. It is one small program with a command line and a local web page that share the same checks.
+
+## ✨ Features
+
+  * **Update everything in one command**, using SMAPI's database to find newer versions. The old version of each mod is kept.
+  * **Install from Nexus Mods** with a page URL, and get offered the dependencies you are missing.
+  * **Disable and enable mods** without deleting them, together with the mods that need them.
+  * **Back up and share your mod list**, so a friend can install the same mods for co-op.
+  * **A command line and a web interface**, for Linux, macOS and Windows (x86-64 and ARM64).
 
 ## Installation
 Download the archive for your platform from the
