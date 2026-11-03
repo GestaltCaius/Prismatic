@@ -7,6 +7,7 @@
 
 [![Release][badge-release]][link-releases]
 [![CI][badge-ci]][link-ci]
+[![macOS][badge-macos]][link-macos]
 [![License][badge-license]](LICENSE)
 ![Platforms][badge-platforms]
 
@@ -245,7 +246,9 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 [badge-release]: https://img.shields.io/github/v/release/GestaltCaius/Prismatic?display_name=tag&style=flat-square
 [badge-ci]: https://img.shields.io/github/actions/workflow/status/GestaltCaius/Prismatic/ci.yml?branch=master&label=ci&style=flat-square
+[badge-macos]: https://img.shields.io/github/actions/workflow/status/GestaltCaius/Prismatic/macos.yml?branch=master&label=macOS&style=flat-square
 [badge-license]: https://img.shields.io/github/license/GestaltCaius/Prismatic?style=flat-square&color=blue
 [badge-platforms]: https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square
 [link-releases]: https://github.com/GestaltCaius/Prismatic/releases
 [link-ci]: https://github.com/GestaltCaius/Prismatic/actions/workflows/ci.yml
+[link-macos]: https://github.com/GestaltCaius/Prismatic/actions/workflows/macos.yml
