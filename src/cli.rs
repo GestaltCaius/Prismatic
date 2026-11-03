@@ -1,5 +1,14 @@
 //! The command line front end: one function per command, printing to the terminal.
 
+use anyhow::{anyhow, bail, Result};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use inquire::MultiSelect;
+use prismatic::manager::{Added, Missing, UpdateResult, Verdict};
+use prismatic::manifest::{Mod, UpdateKeys};
+use prismatic::modlist::{installable, is_installed, list_json, parse_list, Entry};
+use prismatic::nexus::mod_id_from_url;
+use prismatic::progress::{Event, Progress};
+use prismatic::Manager;
 use std::collections::HashSet;
 use std::fmt;
 use std::io::IsTerminal;
@@ -7,15 +16,6 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use anyhow::{anyhow, bail, Result};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use inquire::MultiSelect;
-use prismatic::manager::{Added, Missing, UpdateResult, Verdict};
-use prismatic::manifest::{Mod, UpdateKeys};
-use prismatic::modlist::{is_installed, installable, list_json, parse_list, Entry};
-use prismatic::nexus::mod_id_from_url;
-use prismatic::progress::{Event, Progress};
-use prismatic::Manager;
 use tokio::task::JoinSet;
 
 pub const DEFAULT_FILE: &str = "prismatic-mods.json";
@@ -55,7 +55,9 @@ fn bar(multi: &MultiProgress, label: &str) -> Progress {
                 if let Some(total) = total {
                     if bar.length() != Some(total) {
                         bar.set_length(total);
-                        bar.set_style(style("{prefix:.bold} {msg} {wide_bar} {bytes}/{total_bytes}"));
+                        bar.set_style(style(
+                            "{prefix:.bold} {msg} {wide_bar} {bytes}/{total_bytes}",
+                        ));
                     }
                 }
                 bar.set_message("Downloading");
@@ -90,10 +92,13 @@ fn pick<T>(items: Vec<T>, label: impl Fn(&T) -> String, prompt: &str, all: bool)
         return Ok(items);
     }
     let defaults: Vec<usize> = (0..items.len()).collect();
-    let rows: Vec<Row<T>> = items.into_iter().map(|item| {
-        let text = label(&item);
-        Row(item, text)
-    }).collect();
+    let rows: Vec<Row<T>> = items
+        .into_iter()
+        .map(|item| {
+            let text = label(&item);
+            Row(item, text)
+        })
+        .collect();
     let picked = MultiSelect::new(prompt, rows)
         .with_default(&defaults)
         .with_page_size(15)
@@ -125,7 +130,11 @@ pub async fn list(manager: &Manager) -> Result<()> {
     for m in &mods {
         let manifest = &m.manifest;
         let relative = m.relative(manager.mods_dir());
-        let disabled = if m.is_disabled(manager.mods_dir()) { " [disabled]" } else { "" };
+        let disabled = if m.is_disabled(manager.mods_dir()) {
+            " [disabled]"
+        } else {
+            ""
+        };
         match &manifest.name {
             Some(name) => println!("{name} ({relative}){disabled}"),
             None => println!("{relative}{disabled}"),
@@ -153,8 +162,15 @@ fn matching<'a>(mods: &'a [Mod], mods_dir: &Path, query: &str) -> Vec<&'a Mod> {
     let wanted = query.trim_start_matches('.');
     mods.iter()
         .filter(|m| {
-            let names = [Some(m.display_name(mods_dir)), Some(m.relative(mods_dir)), m.manifest.unique_id.clone()];
-            names.into_iter().flatten().any(|name| name.trim_start_matches('.').eq_ignore_ascii_case(wanted))
+            let names = [
+                Some(m.display_name(mods_dir)),
+                Some(m.relative(mods_dir)),
+                m.manifest.unique_id.clone(),
+            ];
+            names
+                .into_iter()
+                .flatten()
+                .any(|name| name.trim_start_matches('.').eq_ignore_ascii_case(wanted))
         })
         .collect()
 }
@@ -163,7 +179,10 @@ fn matching<'a>(mods: &'a [Mod], mods_dir: &Path, query: &str) -> Vec<&'a Mod> {
 /// Disabling a mod also disables the mods that need it, enabling one also enables the mods it needs.
 pub async fn set_enabled(manager: &Manager, queries: &[String], enabled: bool) -> Result<ExitCode> {
     scan(manager).await?;
-    let (verb, mods_dir) = (if enabled { "enabled" } else { "disabled" }, manager.mods_dir());
+    let (verb, mods_dir) = (
+        if enabled { "enabled" } else { "disabled" },
+        manager.mods_dir(),
+    );
     let mut failed = false;
     for query in queries {
         // Read again every time, an earlier name may have moved this one along with it
@@ -174,11 +193,17 @@ pub async fn set_enabled(manager: &Manager, queries: &[String], enabled: bool) -
                 eprintln!("{query}: no such mod");
             }
             [m] => match manager.set_enabled(std::slice::from_ref(m), enabled).await {
-                Ok(changed) if changed.is_empty() => println!("{}: already {verb}", m.display_name(mods_dir)),
+                Ok(changed) if changed.is_empty() => {
+                    println!("{}: already {verb}", m.display_name(mods_dir));
+                }
                 Ok(changed) => {
                     for other in &changed {
                         let name = other.display_name(mods_dir);
-                        if other.path == m.path { println!("{name}: {verb}") } else { println!("also {verb}: {name}") }
+                        if other.path == m.path {
+                            println!("{name}: {verb}");
+                        } else {
+                            println!("also {verb}: {name}");
+                        }
                     }
                 }
                 Err(e) => {
@@ -189,16 +214,26 @@ pub async fn set_enabled(manager: &Manager, queries: &[String], enabled: bool) -
             ref several => {
                 failed = true;
                 let folders: Vec<_> = several.iter().map(|m| m.relative(mods_dir)).collect();
-                eprintln!("{query}: matches {} mods, use one of their folders: {}", several.len(), folders.join(", "));
+                eprintln!(
+                    "{query}: matches {} mods, use one of their folders: {}",
+                    several.len(),
+                    folders.join(", ")
+                );
             }
         }
     }
-    Ok(if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+    Ok(if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 pub async fn add(manager: &Manager, source: &str) -> Result<()> {
     scan(manager).await?;
-    let id = mod_id_from_url(source).ok_or_else(|| anyhow!("Expected a URL like https://www.nexusmods.com/stardewvalley/mods/<id>"))?;
+    let id = mod_id_from_url(source).ok_or_else(|| {
+        anyhow!("Expected a URL like https://www.nexusmods.com/stardewvalley/mods/<id>")
+    })?;
     let progress = bar(&MultiProgress::new(), &format!("Nexus:{id}"));
     let result = manager.add_nexus(id, &progress).await;
     progress.emit(Event::Done);
@@ -216,14 +251,19 @@ async fn offer_dependencies(manager: &Manager, installed: &[Mod]) -> Result<()> 
     let mut offered = HashSet::new();
     loop {
         let mods = manager.mods().await?;
-        let missing: Vec<Missing> = manager.missing_dependencies(&mods).await.into_iter()
+        let missing: Vec<Missing> = manager
+            .missing_dependencies(&mods)
+            .await
+            .into_iter()
             .filter(|missing| missing.needed_by.iter().any(|name| scope.contains(name)))
             .filter(|missing| offered.insert(missing.unique_id.to_lowercase()))
             .collect();
         if missing.is_empty() {
             break;
         }
-        let (installable, by_hand): (Vec<_>, Vec<_>) = missing.into_iter().partition(|missing| missing.nexus_id.is_some());
+        let (installable, by_hand): (Vec<_>, Vec<_>) = missing
+            .into_iter()
+            .partition(|missing| missing.nexus_id.is_some());
         for missing in &by_hand {
             eprintln!("Warning: {} needs {}, which SMAPI's database has no Nexus page for, install it yourself", missing.needed_by.join(", "), missing.unique_id);
         }
@@ -233,7 +273,13 @@ async fn offer_dependencies(manager: &Manager, installed: &[Mod]) -> Result<()> 
             }
             break;
         }
-        let label = |missing: &Missing| format!("{} (needed by {})", missing.unique_id, missing.needed_by.join(", "));
+        let label = |missing: &Missing| {
+            format!(
+                "{} (needed by {})",
+                missing.unique_id,
+                missing.needed_by.join(", ")
+            )
+        };
         let picked = pick(installable, label, "Missing dependencies, pick the ones to install (space: toggle, right: all, left: none, enter: confirm)", false)?;
         let multi = MultiProgress::new();
         for missing in &picked {
@@ -250,7 +296,10 @@ async fn offer_dependencies(manager: &Manager, installed: &[Mod]) -> Result<()> 
             }
         }
     }
-    let others = manager.missing_dependencies(&manager.mods().await?).await.into_iter()
+    let others = manager
+        .missing_dependencies(&manager.mods().await?)
+        .await
+        .into_iter()
         .filter(|missing| !offered.contains(&missing.unique_id.to_lowercase()))
         .count();
     if others > 0 {
@@ -282,7 +331,9 @@ pub async fn update(manager: &Arc<Manager>, force: bool) -> Result<ExitCode> {
                 skipped += 1;
                 multi.suspend(|| eprintln!("{name}: Already up to date"));
             }
-            Verdict::Together(leader) => multi.suspend(|| eprintln!("{name}: Same download as {leader}")),
+            Verdict::Together(leader) => {
+                multi.suspend(|| eprintln!("{name}: Same download as {leader}"));
+            }
             Verdict::Unsupported(reason) => {
                 unsupported += 1;
                 multi.suspend(|| eprintln!("{name}: {reason}"));
@@ -296,7 +347,9 @@ pub async fn update(manager: &Arc<Manager>, force: bool) -> Result<ExitCode> {
             UpdateResult::Success { new_version } => {
                 updated += 1;
                 match finished.manifest.version {
-                    Some(old_version) => multi.suspend(|| println!("{name}: {old_version} -> {new_version}")),
+                    Some(old_version) => {
+                        multi.suspend(|| println!("{name}: {old_version} -> {new_version}"));
+                    }
                     None => multi.suspend(|| println!("{name}: {new_version}")),
                 }
             }
@@ -323,7 +376,11 @@ pub async fn update(manager: &Arc<Manager>, force: bool) -> Result<ExitCode> {
 
 /// Success unless something failed
 const fn exit_code(failed: usize) -> ExitCode {
-    if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+    if failed == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 pub async fn export(manager: &Manager, file: &Path, all: bool) -> Result<()> {
@@ -338,7 +395,12 @@ pub async fn export(manager: &Manager, file: &Path, all: bool) -> Result<()> {
     for name in &collected.unexportable {
         eprintln!("{name}: No usable update key, can't be exported");
     }
-    let entries = pick(collected.entries, Entry::describe, "Pick mods to export (space: toggle, right: all, left: none, enter: confirm)", all)?;
+    let entries = pick(
+        collected.entries,
+        Entry::describe,
+        "Pick mods to export (space: toggle, right: all, left: none, enter: confirm)",
+        all,
+    )?;
     if entries.is_empty() {
         bail!("No mods selected");
     }
@@ -351,7 +413,12 @@ pub async fn export(manager: &Manager, file: &Path, all: bool) -> Result<()> {
 /// Fails when an entry could not be installed
 pub async fn import(manager: &Manager, file: &Path, all: bool) -> Result<ExitCode> {
     let list = parse_list(&std::fs::read_to_string(file)?)?;
-    let entries = pick(list, Entry::describe, "Pick mods to install (space: toggle, right: all, left: none, enter: confirm)", all)?;
+    let entries = pick(
+        list,
+        Entry::describe,
+        "Pick mods to install (space: toggle, right: all, left: none, enter: confirm)",
+        all,
+    )?;
     scan(manager).await?;
     let multi = MultiProgress::new();
     let (mut installed, mut skipped, mut failed) = (0, 0, 0);
@@ -364,7 +431,10 @@ pub async fn import(manager: &Manager, file: &Path, all: bool) -> Result<ExitCod
             continue;
         }
         if installable(&entry.keys).is_some_and(|key| key.subkey.is_some()) {
-            eprintln!("{}: Subkeys are not yet supported, installing the main file", entry.describe());
+            eprintln!(
+                "{}: Subkeys are not yet supported, installing the main file",
+                entry.describe()
+            );
         }
         let progress = bar(&multi, entry.name.as_deref().unwrap_or("Unnamed mod"));
         let result = manager.install_entry(&entry, &progress).await;

@@ -1,0 +1,128 @@
+name: ci
+
+# Checks every pull request and every push to master. The weekly run exists for cargo-deny and
+# osv-scanner: new advisories appear for dependencies that did not change.
+on:
+  pull_request:
+  push:
+    branches: [master]
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always # rustc warnings are denied by .cargo/config.toml
+
+jobs:
+  # Clippy and the tests on every platform: the mods folder, the folder renames and the
+  # browser cookie code differ per OS, so building on one is not enough.
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false # one platform failing should not hide results for the others
+      matrix:
+        # Explicit labels, newest image of each OS and architecture, so a runner bump is a visible diff.
+        os:
+          - ubuntu-26.04
+          - ubuntu-26.04-arm
+          - macos-26
+          - macos-26-intel
+          - windows-2025
+          # windows-11-arm is left out: btls-sys 0.5.6 (BoringSSL) picks x86_64 assembly there and fails to link
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # rust-toolchain.toml pins the channel and components, rustup installs them on first use.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+  # Cheap checks that do not depend on the platform.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Formatting
+        run: cargo fmt --check
+
+      - name: Docs
+        run: cargo doc --no-deps --document-private-items --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        with:
+          tool: cargo-machete
+
+      - name: Unused dependencies
+        run: cargo machete
+
+  # The release profile (fat LTO, panic=abort) compiles differently from the dev one, and a size
+  # regression is easier to spot on the pull request than after a tag.
+  release-build:
+    runs-on: ubuntu-22.04 # same image as release.yml: the oldest glibc keeps the binary running on older distros
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The key keeps objects built against a newer glibc (BoringSSL) out of this older image.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ubuntu-22.04
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Smoke test and size
+        run: |
+          ./target/release/prismatic --version
+          mkdir -p smoke/Mod && echo '{"Name":"Mod","UniqueID":"a.mod"}' > smoke/Mod/manifest.json
+          ./target/release/prismatic -d smoke list
+          size=$(stat -c %s target/release/prismatic)
+          echo "Binary size: $((size / 1024)) KiB" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # Known vulnerabilities in Cargo.lock from the OSV database, which also has GitHub advisories
+  # that RustSec lacks. Accepted notices are listed with reasons in osv-scanner.toml.
+  osv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        with:
+          tool: osv-scanner
+
+      - name: Scan
+        run: osv-scanner scan source --config osv-scanner.toml --lockfile Cargo.lock
+
+  # Advisories, licenses, duplicate crates and sources, see deny.toml.
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
+        with:
+          tool: cargo-deny
+
+      - name: Check
+        run: cargo deny check

@@ -1,0 +1,41 @@
+# cargo-deny: advisories, licenses, duplicate crates and sources, checked in CI.
+# Run it locally with `cargo deny check`.
+
+[graph]
+# The five platforms the release workflow builds, so platform-specific crates are checked too
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+[advisories]
+version = 2
+# Unmaintained notices for crates that only come in through rookie (browser cookies),
+# with no fixed version to move to. Anything new still fails the check.
+ignore = [
+    { id = "RUSTSEC-2024-0388", reason = "derivative is unmaintained, transitive via rookie" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained, transitive via rookie on Linux" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained, transitive via rookie on Linux" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained, transitive via rookie on Linux" },
+]
+
+[licenses]
+version = 2
+# GPL-3.0-or-later is this crate; LGPL-3.0-or-later is libesedb (rookie, Windows cookies), which GPL-3.0 can link
+allow = [
+    "0BSD", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "BSL-1.0", "CC0-1.0",
+    "CDLA-Permissive-2.0", "GPL-3.0-or-later", "ISC", "LGPL-3.0-or-later", "MIT", "MPL-2.0", "Unicode-3.0",
+    "Unicode-DFS-2016", "Unlicense", "Zlib",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

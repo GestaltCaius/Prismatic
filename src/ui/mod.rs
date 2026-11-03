@@ -7,16 +7,16 @@ mod page;
 #[cfg(test)]
 mod tests;
 
-use std::fmt::Write;
-use std::path::PathBuf;
-use std::sync::{Arc, PoisonError, RwLock};
 use anyhow::{anyhow, bail, Result};
 use axum::routing::{get, post};
 use axum::{middleware, Router};
+use jobs::Jobs;
 use prismatic::nexus::Nexus;
 use prismatic::Manager;
+use std::fmt::Write;
+use std::path::PathBuf;
+use std::sync::{Arc, PoisonError, RwLock};
 use tokio::net::TcpListener;
-use jobs::Jobs;
 
 pub const DEFAULT_PORT: u16 = 47821;
 
@@ -38,7 +38,10 @@ type Shared = Arc<AppState>;
 
 impl AppState {
     fn manager(&self) -> Option<Arc<Manager>> {
-        self.manager.read().unwrap_or_else(PoisonError::into_inner).clone()
+        self.manager
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -50,8 +53,14 @@ fn router(state: Shared) -> Router {
         .route("/assets/dog.gif", get(page::dog))
         .route("/api/state", get(api::state))
         .route("/api/folder", post(api::set_folder))
-        .route("/api/cookie", post(api::set_cookie).delete(api::forget_cookie))
-        .route("/api/cookie/environment", post(api::cookie_from_environment))
+        .route(
+            "/api/cookie",
+            post(api::set_cookie).delete(api::forget_cookie),
+        )
+        .route(
+            "/api/cookie/environment",
+            post(api::cookie_from_environment),
+        )
         .route("/api/cookie/browser", post(api::cookie_from_browser))
         .route("/api/enable", post(api::enable))
         .route("/api/check", post(api::check))
@@ -67,7 +76,10 @@ fn router(state: Shared) -> Router {
 
 fn new_state(mods_dir: Option<PathBuf>, explicit: bool, port: u16) -> Result<Shared> {
     let nexus = Arc::new(Nexus::new());
-    let manager = mods_dir.map(|dir| Manager::with_nexus(dir, nexus.clone())).transpose()?.map(Arc::new);
+    let manager = mods_dir
+        .map(|dir| Manager::with_nexus(dir, nexus.clone()))
+        .transpose()?
+        .map(Arc::new);
     Ok(Arc::new(AppState {
         manager: RwLock::new(manager),
         nexus,
@@ -92,7 +104,9 @@ fn open_browser(url: &str) {
     let result = if cfg!(target_os = "macos") {
         std::process::Command::new("open").arg(url).spawn()
     } else if cfg!(windows) {
-        std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn()
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
     } else {
         std::process::Command::new("xdg-open").arg(url).spawn()
     };

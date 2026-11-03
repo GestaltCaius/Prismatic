@@ -4,8 +4,9 @@ _.file = ".env"
 
 [tools]
 cmake = "latest" # wreq builds BoringSSL with it
+pinact = "latest"
 rust = "latest"
 
 [tasks.check]
-description = "Clippy + build + tests, fast feedback before commit"
-run = ["cargo clippy --all-targets -- -D warnings", "cargo build", "cargo test"]
+description = "Format, clippy, build and tests, fast feedback before commit"
+run = ["cargo fmt --check", "cargo clippy --all-targets -- -D warnings", "cargo build", "cargo test"]

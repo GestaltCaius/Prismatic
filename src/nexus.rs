@@ -1,12 +1,12 @@
-use std::sync::{PoisonError, RwLock};
+use crate::http::read_body;
+use crate::manifest::is_nexus_id;
+use crate::progress::{Event, Progress};
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use scraper::{Html, Selector};
 use serde_json::json;
+use std::sync::{PoisonError, RwLock};
 use tokio::sync::{OnceCell, Semaphore};
-use crate::http::read_body;
-use crate::manifest::is_nexus_id;
-use crate::progress::{Event, Progress};
 
 const GAME_ID: u32 = 1303;
 /// Downloads at once, more gets us rate-limited
@@ -23,26 +23,43 @@ pub struct Nexus {
     slots: Semaphore,
 }
 
+/// Left out on purpose: the cookie is a credential and must not end up in a log
+impl std::fmt::Debug for Nexus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Nexus").finish_non_exhaustive()
+    }
+}
+
 /// `nexusmods_session` out of a bare value or a full cookie string
 fn session_from(value: &str) -> String {
-    value.split(';')
+    value
+        .split(';')
         .find_map(|part| part.trim().strip_prefix("nexusmods_session="))
         .map_or_else(|| value.trim().to_string(), str::to_string)
 }
 
 /// Extracts the mod id from a Stardew Valley Nexus URL
 pub fn mod_id_from_url(url: &str) -> Option<&str> {
-    let id = url.split("nexusmods.com/stardewvalley/mods/").nth(1)?
-        .split(['?', '#', '/']).next()?;
+    let id = url
+        .split("nexusmods.com/stardewvalley/mods/")
+        .nth(1)?
+        .split(['?', '#', '/'])
+        .next()?;
     is_nexus_id(id).then_some(id)
 }
 
 /// The `data-id` of the main file on a mod's files tab, or of the first update file when there is none
 fn main_file_id(html: &str) -> Result<String> {
     let document = Html::parse_document(html);
-    let header = |container: &str| Selector::parse(&format!("#{container} .file-expander-header")).map_err(|e| anyhow!("{e}"));
-    let (main, updates) = (header("file-container-main-files")?, header("file-container-update-files")?);
-    document.select(&main)
+    let header = |container: &str| {
+        Selector::parse(&format!("#{container} .file-expander-header")).map_err(|e| anyhow!("{e}"))
+    };
+    let (main, updates) = (
+        header("file-container-main-files")?,
+        header("file-container-update-files")?,
+    );
+    document
+        .select(&main)
         .next()
         .or_else(|| document.select(&updates).next())
         .ok_or_else(|| anyhow!("HTML parsing failed: couldn't locate main file element"))?
@@ -53,11 +70,18 @@ fn main_file_id(html: &str) -> Result<String> {
 
 impl Nexus {
     pub fn new() -> Self {
-        Self { pasted: RwLock::new(None), found: OnceCell::new(), slots: Semaphore::new(DOWNLOAD_SLOTS) }
+        Self {
+            pasted: RwLock::new(None),
+            found: OnceCell::new(),
+            slots: Semaphore::new(DOWNLOAD_SLOTS),
+        }
     }
 
     fn pasted(&self) -> Option<String> {
-        self.pasted.read().unwrap_or_else(PoisonError::into_inner).clone()
+        self.pasted
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub fn set_cookie(&self, value: &str) {
@@ -82,7 +106,9 @@ impl Nexus {
 
     /// The `NEXUS_COOKIE` variable, as a bare session value
     pub fn env_cookie() -> Option<String> {
-        std::env::var("NEXUS_COOKIE").ok().map(|value| session_from(&value))
+        std::env::var("NEXUS_COOKIE")
+            .ok()
+            .map(|value| session_from(&value))
     }
 
     /// Reads the session from the browsers' cookie stores, which may ask for a keychain password
@@ -97,42 +123,67 @@ impl Nexus {
         if let Some(pasted) = self.pasted() {
             return Ok(pasted);
         }
-        let found = self.found.get_or_try_init(|| async {
-            match Self::env_cookie() {
-                Some(cookie) => Ok(cookie),
-                None => tokio::task::spawn_blocking(Self::browser_cookie).await?,
-            }
-        }).await?;
+        let found = self
+            .found
+            .get_or_try_init(|| async {
+                match Self::env_cookie() {
+                    Some(cookie) => Ok(cookie),
+                    None => tokio::task::spawn_blocking(Self::browser_cookie).await?,
+                }
+            })
+            .await?;
         Ok(found.clone())
     }
 
     /// Downloads the main file of a Stardew Valley mod
-    pub async fn download(&self, http: &wreq::Client, mod_id: &str, progress: &Progress) -> Result<Bytes> {
+    pub async fn download(
+        &self,
+        http: &wreq::Client,
+        mod_id: &str,
+        progress: &Progress,
+    ) -> Result<Bytes> {
         let session = self.session().await?;
         progress.emit(Event::Stage("Waiting for a download slot"));
         let _slot = self.slots.acquire().await?;
         let cookie = format!("nexusmods_session={session}");
         let files_url = format!("https://www.nexusmods.com/stardewvalley/mods/{mod_id}?tab=files");
         progress.emit(Event::Stage("Finding the file"));
-        let html = http.get(&files_url)
+        let html = http
+            .get(&files_url)
             .header("Cookie", &cookie)
             .header("Referer", "https://www.nexusmods.com/stardewvalley/mods/")
-            .send().await?.error_for_status()?.text().await?;
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
         let file_id = main_file_id(&html)?;
         progress.emit(Event::Stage("Requesting the download link"));
         let link = http
-            .post("https://www.nexusmods.com/Core/Libs/Common/Managers/Downloads?GenerateDownloadUrl")
+            .post(
+                "https://www.nexusmods.com/Core/Libs/Common/Managers/Downloads?GenerateDownloadUrl",
+            )
             .form(&json!({"fid": file_id, "game_id": GAME_ID, "collection_id": 0}))
             .header("Cookie", &cookie)
             .header("Referer", &files_url)
             .header("X-Requested-With", "XMLHttpRequest")
             .header("Origin", "https://www.nexusmods.com")
-            .send().await?
+            .send()
+            .await?
             .error_for_status()?
-            .json::<serde_json::Value>().await?;
-        let url = link.get("url").ok_or_else(|| anyhow!("GenerateDownloadUrl unexpected response: {link}"))?
-            .as_str().ok_or_else(|| anyhow!("GenerateDownloadUrl: url is not a string"))?;
-        let response = http.get(url).header("Cookie", &cookie).send().await?.error_for_status()?;
+            .json::<serde_json::Value>()
+            .await?;
+        let url = link
+            .get("url")
+            .ok_or_else(|| anyhow!("GenerateDownloadUrl unexpected response: {link}"))?
+            .as_str()
+            .ok_or_else(|| anyhow!("GenerateDownloadUrl: url is not a string"))?;
+        let response = http
+            .get(url)
+            .header("Cookie", &cookie)
+            .send()
+            .await?
+            .error_for_status()?;
         read_body(response, progress).await
     }
 }
@@ -144,15 +195,49 @@ impl Default for Nexus {
 }
 
 #[cfg(test)]
+mod properties {
+    use super::{is_nexus_id, mod_id_from_url};
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn an_id_taken_from_a_url_is_a_real_id_that_was_in_it(url in any::<String>()) {
+            if let Some(id) = mod_id_from_url(&url) {
+                prop_assert!(is_nexus_id(id) && url.contains(id));
+            }
+        }
+
+        #[test]
+        fn pages_of_a_mod_give_its_id(id in 1u32..10_000_000, tail in "([?#/][a-z=&0-9]{0,12})?") {
+            let url = format!("https://www.nexusmods.com/stardewvalley/mods/{id}{tail}");
+            let expected = id.to_string();
+            prop_assert_eq!(mod_id_from_url(&url), Some(expected.as_str()));
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{main_file_id, mod_id_from_url, session_from, Nexus};
 
     #[test]
     fn parses_nexus_urls() {
-        assert_eq!(mod_id_from_url("https://www.nexusmods.com/stardewvalley/mods/3109?tab=files"), Some("3109"));
-        assert_eq!(mod_id_from_url("nexusmods.com/stardewvalley/mods/12/"), Some("12"));
-        assert_eq!(mod_id_from_url("https://www.nexusmods.com/skyrim/mods/1"), None);
-        assert_eq!(mod_id_from_url("https://www.nexusmods.com/stardewvalley/mods/abc"), None);
+        assert_eq!(
+            mod_id_from_url("https://www.nexusmods.com/stardewvalley/mods/3109?tab=files"),
+            Some("3109")
+        );
+        assert_eq!(
+            mod_id_from_url("nexusmods.com/stardewvalley/mods/12/"),
+            Some("12")
+        );
+        assert_eq!(
+            mod_id_from_url("https://www.nexusmods.com/skyrim/mods/1"),
+            None
+        );
+        assert_eq!(
+            mod_id_from_url("https://www.nexusmods.com/stardewvalley/mods/abc"),
+            None
+        );
     }
 
     #[test]
@@ -173,10 +258,16 @@ mod tests {
 
     #[test]
     fn finds_the_main_file_then_falls_back_to_update_files() {
-        let page = |main: &str, update: &str| format!(
-            r#"<div id="file-container-main-files">{main}</div><div id="file-container-update-files">{update}</div>"#);
+        let page = |main: &str, update: &str| {
+            format!(
+                r#"<div id="file-container-main-files">{main}</div><div id="file-container-update-files">{update}</div>"#
+            )
+        };
         let header = |id: &str| format!(r#"<dt class="file-expander-header" data-id="{id}"></dt>"#);
-        assert_eq!(main_file_id(&page(&header("11"), &header("22"))).unwrap(), "11");
+        assert_eq!(
+            main_file_id(&page(&header("11"), &header("22"))).unwrap(),
+            "11"
+        );
         assert_eq!(main_file_id(&page("", &header("22"))).unwrap(), "22");
     }
 
@@ -184,7 +275,11 @@ mod tests {
     fn reports_a_page_without_files_or_ids() {
         let none = main_file_id("<html></html>").unwrap_err().to_string();
         assert!(none.contains("couldn't locate main file element"), "{none}");
-        let no_id = main_file_id(r#"<div id="file-container-main-files"><dt class="file-expander-header"></dt></div>"#).unwrap_err().to_string();
+        let no_id = main_file_id(
+            r#"<div id="file-container-main-files"><dt class="file-expander-header"></dt></div>"#,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(no_id.contains("data-id"), "{no_id}");
     }
 }

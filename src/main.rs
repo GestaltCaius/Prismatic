@@ -1,14 +1,14 @@
 mod cli;
 mod ui;
 
-use std::path::PathBuf;
-use std::process::ExitCode;
-use std::sync::Arc;
+use crate::cli::DEFAULT_FILE;
+use crate::ui::DEFAULT_PORT;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use prismatic::{paths, Manager};
-use crate::cli::DEFAULT_FILE;
-use crate::ui::DEFAULT_PORT;
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::sync::Arc;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -87,7 +87,8 @@ async fn main() -> ExitCode {
         Ok(code) => code,
         Err(err) => {
             eprintln!("Error: {err}");
-            #[cfg(debug_assertions)] {
+            #[cfg(debug_assertions)]
+            {
                 eprintln!("{err:?}");
             }
             ExitCode::FAILURE
@@ -98,7 +99,10 @@ async fn main() -> ExitCode {
 /// Exit code: 0 on success, 1 on any error or when an update or import left something undone
 async fn main_inner() -> Result<ExitCode> {
     let args = Args::parse();
-    let command = args.command.unwrap_or(Command::Ui { port: DEFAULT_PORT, no_open: false });
+    let command = args.command.unwrap_or(Command::Ui {
+        port: DEFAULT_PORT,
+        no_open: false,
+    });
     if let Command::Ui { port, no_open } = command {
         // The page can ask for the folder, so not finding one is no reason to stop
         let explicit = args.mods_dir.is_some();

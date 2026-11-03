@@ -1,9 +1,9 @@
 //! Background jobs the page polls for: one job per button press, one item per mod.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use anyhow::Result;
 use prismatic::progress::{Event, Progress};
 use serde::Serialize;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// How many finished jobs the page keeps showing
 const JOBS_KEPT: usize = 20;
@@ -55,14 +55,17 @@ impl Jobs {
         jobs.push(Job {
             id,
             title: title.to_string(),
-            items: labels.into_iter().map(|label| Item {
-                label,
-                status: Status::Queued,
-                message: String::new(),
-                stage: String::new(),
-                downloaded: 0,
-                total: None,
-            }).collect(),
+            items: labels
+                .into_iter()
+                .map(|label| Item {
+                    label,
+                    status: Status::Queued,
+                    message: String::new(),
+                    stage: String::new(),
+                    downloaded: 0,
+                    total: None,
+                })
+                .collect(),
             finished: false,
         });
         while jobs.len() > JOBS_KEPT {
@@ -73,7 +76,12 @@ impl Jobs {
     }
 
     fn with_item(&self, job: usize, index: usize, change: impl FnOnce(&mut Item)) {
-        if let Some(item) = self.lock().iter_mut().find(|j| j.id == job).and_then(|j| j.items.get_mut(index)) {
+        if let Some(item) = self
+            .lock()
+            .iter_mut()
+            .find(|j| j.id == job)
+            .and_then(|j| j.items.get_mut(index))
+        {
             change(item);
         }
     }
@@ -108,27 +116,29 @@ impl Jobs {
     /// Progress reports that land on one item of a job
     pub fn progress(self: &Arc<Self>, job: usize, index: usize) -> Progress {
         let jobs = self.clone();
-        Progress::new(move |event| jobs.with_item(job, index, |item| match event {
-            Event::Stage(label) => {
-                label.clone_into(&mut item.stage);
-                item.downloaded = 0;
-                item.total = None;
-            }
-            Event::Download { done, total } => {
-                "Downloading".clone_into(&mut item.stage);
-                item.downloaded = done;
-                item.total = total;
-            }
-            Event::Done => item.stage.clear(),
-        }))
+        Progress::new(move |event| {
+            jobs.with_item(job, index, |item| match event {
+                Event::Stage(label) => {
+                    label.clone_into(&mut item.stage);
+                    item.downloaded = 0;
+                    item.total = None;
+                }
+                Event::Download { done, total } => {
+                    "Downloading".clone_into(&mut item.stage);
+                    item.downloaded = done;
+                    item.total = total;
+                }
+                Event::Done => item.stage.clear(),
+            });
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use prismatic::progress::Event;
     use super::{Jobs, Status, JOBS_KEPT};
+    use prismatic::progress::Event;
+    use std::sync::Arc;
 
     fn json(jobs: &Jobs) -> serde_json::Value {
         serde_json::to_value(jobs.snapshot()).unwrap()
@@ -147,7 +157,13 @@ mod tests {
 
         let state = json(&jobs);
         assert_eq!(state[0]["items"][0]["message"], "1 -> 2");
-        assert_eq!((state[0]["items"][1]["status"].as_str(), state[0]["items"][1]["message"].as_str()), (Some("failed"), Some("boom")));
+        assert_eq!(
+            (
+                state[0]["items"][1]["status"].as_str(),
+                state[0]["items"][1]["message"].as_str()
+            ),
+            (Some("failed"), Some("boom"))
+        );
         assert_eq!(state[0]["finished"], true);
     }
 
@@ -157,10 +173,20 @@ mod tests {
         let id = jobs.start("Add", vec!["A".into()]);
         let progress = jobs.progress(id, 0);
 
-        progress.emit(Event::Download { done: 5, total: Some(10) });
+        progress.emit(Event::Download {
+            done: 5,
+            total: Some(10),
+        });
         let state = json(&jobs);
         let item = &state[0]["items"][0];
-        assert_eq!((item["stage"].as_str(), item["downloaded"].as_u64(), item["total"].as_u64()), (Some("Downloading"), Some(5), Some(10)));
+        assert_eq!(
+            (
+                item["stage"].as_str(),
+                item["downloaded"].as_u64(),
+                item["total"].as_u64()
+            ),
+            (Some("Downloading"), Some(5), Some(10))
+        );
 
         progress.emit(Event::Done);
         assert_eq!(json(&jobs)[0]["items"][0]["stage"], "");
