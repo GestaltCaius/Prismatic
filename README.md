@@ -82,6 +82,13 @@ prismatic enable "Em's Cats"
 Give a name, a folder or a unique ID, as `list` shows them, and put quotes around anything with a space.
 Mods that need a disabled mod are disabled with it, and enabling a mod enables what it needs.
 
+Without a name, Prismatic shows a list to choose from (`disable` lists the enabled mods, `enable` the disabled ones):
+```bash
+prismatic disable
+```
+Nothing starts selected, space selects a mod and enter confirms. Pressing enter on an empty selection changes nothing.
+Without a terminal a name is required.
+
 ### Back up or share your mod list
 ```bash
 prismatic export                         # asks which mods to include, writes prismatic-mods.json
@@ -147,8 +154,8 @@ $env:NEXUS_COOKIE="<value>"; prismatic update
 | `prismatic` or `prismatic ui` | Opens the [web interface](#using-the-web-interface) |
 | `prismatic list` | Lists installed mods |
 | `prismatic add <nexus url>` | Installs a mod from a Nexus Mods page, e.g. `https://www.nexusmods.com/stardewvalley/mods/3109` |
-| `prismatic disable <mod>...` | Makes SMAPI ignore mods (names, folders or unique IDs as `list` shows them), and the mods that need them |
-| `prismatic enable <mod>...` | Undoes `disable`, and also enables the mods they need |
+| `prismatic disable [mod]...` | Makes SMAPI ignore mods (names, folders or unique IDs as `list` shows them), and the mods that need them. Without a name, you choose from a list |
+| `prismatic enable [mod]...` | Undoes `disable`, and also enables the mods they need. Without a name, you choose from a list |
 | `prismatic update` | Updates installed mods if needed (`--force` skips the check) |
 | `prismatic export [file]` | Writes your mod list to `prismatic-mods.json` (or `file`) |
 | `prismatic import <file>` | Installs the mods listed in a file made by `export` |

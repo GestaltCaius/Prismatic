@@ -63,14 +63,12 @@ enum Command {
     },
     /// Makes SMAPI ignore mods, and the mods that need them, by putting a dot in front of their folder name
     Disable {
-        /// Mod names, folders or unique IDs, as `list` shows them
-        #[clap(required = true)]
+        /// Mod names, folders or unique IDs, as `list` shows them. Without any, choose from a list
         mods: Vec<String>,
     },
     /// Undoes `disable`, and also enables the disabled mods they need
     Enable {
-        /// Mod names, folders or unique IDs, as `list` shows them
-        #[clap(required = true)]
+        /// Mod names, folders or unique IDs, as `list` shows them. Without any, choose from a list
         mods: Vec<String>,
     },
     /// Updates all installed mods if needed
