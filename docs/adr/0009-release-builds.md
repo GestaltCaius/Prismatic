@@ -12,8 +12,9 @@ BoringSSL's assembly to `cl.exe`, which cannot assemble it.
 Release binaries are built with cargo-auditable, so their crate list can be scanned. The release job makes a
 CycloneDX SBOM, scans the binaries and the SBOM, and refuses to publish on a known vulnerability. Only the
 publish job holds write access, and the build jobs use no cache. A manual run of the workflow does everything
-except publish. CI runs the tests on the newest explicit images, one per OS and architecture. The macOS jobs
-are not required checks, because GitHub's free macOS runners are often unavailable.
+except publish. CI runs the tests on the newest explicit images, one per OS and architecture. The macOS tests are
+a separate workflow and not required checks, because GitHub's free macOS runners are often unavailable and a
+job that never starts would otherwise turn the main CI badge red.
 
 ## Forbidden
 - A build cache in the job that builds the shipped binaries.
