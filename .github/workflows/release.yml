@@ -3,6 +3,8 @@ name: release
 # Builds optimised binaries for every supported platform and attaches them to a
 # GitHub Release. Each target builds on its own native runner: wreq builds BoringSSL
 # with cmake, which is the awkward part of any cross-compile.
+# The tag and the release itself, with its notes, are made by release-please (release-please.yml).
+# This workflow adds the binaries to that release.
 on:
   push:
     tags: ["v*"]
@@ -145,4 +147,3 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: dist/*
-          generate_release_notes: true

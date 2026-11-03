@@ -30,6 +30,11 @@ behaviour belongs there and not in `src/cli.rs` or `src/ui/`.
 - `cargo test`: the tests need no network, those that do are `#[ignore]` (run them with `-- --ignored`).
 - CI also runs `cargo deny check`, OSV-Scanner and zizmor, see `.github/workflows/ci.yml`.
 
+## Releasing
+Do not tag or bump the version by hand. release-please keeps a release pull request open on `master`, merge it to
+cut the release (see `docs/adr/0011-releases-come-from-release-please.md`). Name every pull request
+`<type>: <name>` with a conventional commit type, since that title is what goes into the changelog.
+
 ## Conventions
 - Warnings are errors, and clippy runs with `pedantic` and `nursery`. `unwrap` is denied outside tests, `unsafe` is forbidden.
 - Comments say why, not what, and match the density of the code around them.
