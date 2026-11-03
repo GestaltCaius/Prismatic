@@ -37,11 +37,21 @@ jobs:
           - macos-26
           - macos-26-intel
           - windows-2025
-          # windows-11-arm is left out: btls-sys 0.5.6 (BoringSSL) picks x86_64 assembly there and fails to link
+          - windows-11-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # BoringSSL's assembly on Windows ARM64 only builds with clang-cl and Ninja: the Visual Studio
+      # generator hands the .S files to cl.exe, which can't assemble them and then fails to link.
+      - name: Use clang-cl
+        if: matrix.os == 'windows-11-arm'
+        shell: pwsh
+        run: |
+          "CMAKE_GENERATOR=Ninja" >> $env:GITHUB_ENV
+          "CC=clang-cl" >> $env:GITHUB_ENV
+          "CXX=clang-cl" >> $env:GITHUB_ENV
 
       # rust-toolchain.toml pins the channel and components, rustup installs them on first use.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3

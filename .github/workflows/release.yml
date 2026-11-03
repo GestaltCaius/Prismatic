@@ -31,18 +31,30 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04-arm
           # macOS and Windows are pinned to the newest image: the macOS binary still targets 11.0 and
-          # Windows runs any build. Windows ARM runs the x86_64 build, a native one fails in btls-sys.
+          # Windows runs any build.
           - target: aarch64-apple-darwin
             os: macos-26
           - target: x86_64-apple-darwin
             os: macos-26-intel
           - target: x86_64-pc-windows-msvc
             os: windows-2025
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # BoringSSL's assembly on Windows ARM64 only builds with clang-cl and Ninja: the Visual Studio
+      # generator hands the .S files to cl.exe, which can't assemble them and then fails to link.
+      - name: Use clang-cl
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          "CMAKE_GENERATOR=Ninja" >> $env:GITHUB_ENV
+          "CC=clang-cl" >> $env:GITHUB_ENV
+          "CXX=clang-cl" >> $env:GITHUB_ENV
 
       # No build cache here: what this job builds is what gets shipped, and a cache can carry
       # objects from a run that is not a tagged one.

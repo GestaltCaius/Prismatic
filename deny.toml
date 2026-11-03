@@ -2,13 +2,14 @@
 # Run it locally with `cargo deny check`.
 
 [graph]
-# The five platforms the release workflow builds, so platform-specific crates are checked too
+# The six platforms the release workflow builds, so platform-specific crates are checked too
 targets = [
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
     "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
 ]
 
 [advisories]
