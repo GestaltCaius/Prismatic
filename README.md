@@ -98,6 +98,9 @@ Currently only files or directories named `config` or `config.json` are copied w
 When updating the mod's directory is moved into `.old` in the mods directory and is otherwise untouched,
 if some config files aren't automatically copied they can manually be copied from there.
 
+## Design decisions
+Why things are built the way they are is written down in [`docs/adr`](docs/adr/README.md).
+
 ## Security
 
 Release binaries are built with [cargo-auditable](https://github.com/rust-secure-code/cargo-auditable), so the list of crates
