@@ -97,7 +97,10 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.target }}
-          path: dist/*
+          # The archives only, not the folders they were made from
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
           if-no-files-found: error
 
   release:
@@ -136,7 +139,7 @@ jobs:
           osv-scanner scan source --config osv-scanner.toml --sbom dist/*.cdx.json
 
       - name: Checksums
-        run: cd dist && sha256sum * | tee SHA256SUMS
+        run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
 
       - if: startsWith(github.ref, 'refs/tags/') # a dry run stops here
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
