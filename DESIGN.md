@@ -151,7 +151,7 @@ Flat. Hierarchy comes from borders and tonal layers (neutral page, surface panel
 
 ## Assets
 
-`src/ui/assets/` holds `logo.png` (Stardew Valley logo, 1x), `duck.png` (tab icon) and `dog.gif` (idle state in the activity panel). They belong to ConcernedApe and come from his logo press kit and the Stardew Valley wiki. Prismatic is not affiliated with Stardew Valley or ConcernedApe. Pixel art is shown at integer scales with `image-rendering: pixelated`. The server hands the images out without the API token, to loopback hosts only, because `<img>` cannot send the token header.
+`src/ui/assets/` holds `logo.png` (Stardew Valley logo, 1x), `duck.png` (tab icon) and `dog.gif` (idle state in the activity panel). They belong to ConcernedApe and come from his logo press kit and the Stardew Valley wiki. Prismatic is not affiliated with Stardew Valley or ConcernedApe. The README shows the duck beside the title from `docs/images/duck.png`, the same sprite scaled 2x with nearest-neighbour so it stays sharp on high-density screens. Pixel art is shown at integer scales with `image-rendering: pixelated`. The server hands the images out without the API token, to loopback hosts only, because `<img>` cannot send the token header.
 
 ## Accessibility gates
 

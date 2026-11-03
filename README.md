@@ -1,25 +1,16 @@
-<h1 align="center">Prismatic</h1>
+<h1 align="center"><img src="docs/images/duck.png" width="48" height="45" alt=""/> Prismatic</h1>
 <h3 align="center">Install, update and manage your Stardew Valley mods from the terminal or the browser.</h3>
 
 ---
 
-<p align="center">
+<div align="center">
 
-<a href="https://github.com/GestaltCaius/Prismatic/releases">
-<img alt="Current Release" src="https://img.shields.io/github/v/release/GestaltCaius/Prismatic?display_name=tag"/>
-</a>
+[![Release][badge-release]][link-releases]
+[![CI][badge-ci]][link-ci]
+[![License][badge-license]](LICENSE)
+![Platforms][badge-platforms]
 
-<a href="https://github.com/GestaltCaius/Prismatic/actions/workflows/ci.yml">
-<img alt="GitHub Actions Workflow Status" src="https://github.com/GestaltCaius/Prismatic/actions/workflows/ci.yml/badge.svg?branch=master"/>
-</a>
-
-<a href="LICENSE">
-<img alt="License" src="https://img.shields.io/github/license/GestaltCaius/Prismatic"/>
-</a>
-
-<img alt="Platforms" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey"/>
-
-</p>
+</div>
 
 ---
 
@@ -251,3 +242,10 @@ inside them can be scanned for known vulnerabilities, for example with `osv-scan
 Trivy or Grype. Each release also carries a CycloneDX SBOM (`*.cdx.json`) and `SHA256SUMS`. The release workflow scans the binaries
 and the SBOM first and does not publish if they have a known vulnerability. Pull requests run `cargo-deny` and OSV-Scanner on `Cargo.lock`.
 To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+[badge-release]: https://img.shields.io/github/v/release/GestaltCaius/Prismatic?display_name=tag&style=flat-square
+[badge-ci]: https://img.shields.io/github/actions/workflow/status/GestaltCaius/Prismatic/ci.yml?branch=master&label=ci&style=flat-square
+[badge-license]: https://img.shields.io/github/license/GestaltCaius/Prismatic?style=flat-square&color=blue
+[badge-platforms]: https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square
+[link-releases]: https://github.com/GestaltCaius/Prismatic/releases
+[link-ci]: https://github.com/GestaltCaius/Prismatic/actions/workflows/ci.yml
