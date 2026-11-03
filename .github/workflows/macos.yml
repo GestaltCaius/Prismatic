@@ -1,0 +1,46 @@
+name: macos
+
+# The same clippy and tests as ci.yml, on macOS. GitHub's free macOS runners are often unavailable, so
+# this is its own workflow: a stalled run turns the macOS badge red and leaves the main ci badge alone.
+# None of these jobs is a required check.
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always # rustc warnings are denied by .cargo/config.toml
+
+jobs:
+  test:
+    name: macos (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # Apple silicon, then Intel
+        os:
+          - macos-26
+          - macos-26-intel
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # rust-toolchain.toml pins the channel and components, rustup installs them on first use.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked

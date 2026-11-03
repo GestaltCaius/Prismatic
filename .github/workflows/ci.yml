@@ -21,15 +21,13 @@ env:
   CARGO_TERM_COLOR: always # rustc warnings are denied by .cargo/config.toml
 
 jobs:
-  # Clippy and the tests on every platform: the mods folder, the folder renames and the
-  # browser cookie code differ per OS, so building on one is not enough.
+  # Clippy and the tests on Linux and Windows: the mods folder, the folder renames and the
+  # browser cookie code differ per OS, so building on one is not enough. macOS is in macos.yml, so a
+  # runner GitHub does not provide cannot turn this workflow, and its badge, red.
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
-    # GitHub's free macOS runners are often unavailable and these jobs are not required checks. A failure
-    # there still shows as a red job, but it no longer turns the whole run, and the README badge, red.
-    continue-on-error: ${{ startsWith(matrix.os, 'macos') }}
     strategy:
       fail-fast: false # one platform failing should not hide results for the others
       matrix:
@@ -37,8 +35,6 @@ jobs:
         os:
           - ubuntu-26.04
           - ubuntu-26.04-arm
-          - macos-26
-          - macos-26-intel
           - windows-2025
           - windows-11-arm
     steps:
