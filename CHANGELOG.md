@@ -2,15 +2,25 @@
 
 ## 0.1.0 (2026-11-03)
 
+First release.
 
 ### Features
 
-* author links, default mods folders and pack-aware sources ([#10](https://github.com/GestaltCaius/Prismatic/issues/10)) ([e145ae5](https://github.com/GestaltCaius/Prismatic/commit/e145ae559d0d331f979d24c45d32ec0381c90499))
-* choose the mods folder from the web UI ([#11](https://github.com/GestaltCaius/Prismatic/issues/11)) ([c38be68](https://github.com/GestaltCaius/Prismatic/commit/c38be688acde1852e27c45fae11645b7d07de39a))
-* enable/disable mods, topbar and missing dependencies ([#12](https://github.com/GestaltCaius/Prismatic/issues/12)) ([bfa2bfc](https://github.com/GestaltCaius/Prismatic/commit/bfa2bfc84f9a69ecc34f054071b1622552534ad4))
+* **Command line and web interface.** One core, two front ends: `prismatic` opens a local web page, or use the commands in a terminal.
+* **Install from Nexus Mods** with a page URL (`prismatic add`), using your signed-in session cookie. Missing dependencies are offered, never installed unasked.
+* **Update mods** with `prismatic update`. SMAPI's database finds newer versions and sources, the previous version is kept in `.old` and config files are copied across.
+* **Disable and enable mods** by putting a dot in front of the folder name, which SMAPI ignores. Mods that need a disabled mod go with it. With no name, a list lets you choose.
+* **Back up and share your mod list** with `export` and `import`, for co-op.
+* **Web interface** with a Mods and a Settings tab, a mods folder chooser with Steam and GOG defaults, a Nexus cookie panel, author links and a missing-dependencies panel.
+* **Binaries** for Linux, macOS and Windows, on x86-64 and ARM64.
 
+### Security
+
+* The web server listens on `127.0.0.1` only and needs a launch token and a loopback `Host`.
+* The Nexus cookie is never written to disk by Prismatic, logged or exported.
+* Archive entries cannot write outside the mods folder.
+* Dependencies are pinned and checked with cargo-deny and OSV-Scanner. Release binaries are built with cargo-auditable, scanned before publishing, and ship with a CycloneDX SBOM and `SHA256SUMS`.
 
 ### Documentation
 
-* decision records and AGENTS.md ([#17](https://github.com/GestaltCaius/Prismatic/issues/17)) ([f29cbaf](https://github.com/GestaltCaius/Prismatic/commit/f29cbaf150bf64fa46c404c2bd003b51904de793))
-* define README badges as reference links and add the duck beside the title ([#24](https://github.com/GestaltCaius/Prismatic/issues/24)) ([0d16b21](https://github.com/GestaltCaius/Prismatic/commit/0d16b2103caba46511715e2f89ee51e6a743d25e))
+* README with a screenshot and command examples, `SECURITY.md`, and decision records in `docs/adr`.
