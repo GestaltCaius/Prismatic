@@ -1,0 +1,39 @@
+name: release-please
+
+# Keeps a release pull request open: the version bump in Cargo.toml and Cargo.lock and CHANGELOG.md,
+# written from the conventional commit titles on master. Merging that pull request creates the tag and the
+# GitHub Release, and the tag starts release.yml, which builds and attaches the binaries.
+#
+# The token comes from a GitHub App, not GITHUB_TOKEN: pull requests and tags made with GITHUB_TOKEN start
+# no workflows, so the release pull request would get none of the required checks and the tag no build.
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Only the three permissions release-please needs, and only on this repository
+      - id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

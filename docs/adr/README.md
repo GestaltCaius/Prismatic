@@ -18,6 +18,7 @@ A change that contradicts a record needs a new record that supersedes it, in the
 | [0008](0008-dependencies-are-pinned-and-scanned.md) | Dependencies are pinned, delayed and scanned |
 | [0009](0009-release-builds.md) | Release builds are native, old on Linux and scanned before publishing |
 | [0010](0010-small-binary-strict-lints.md) | Small binary, strict lints |
+| [0011](0011-releases-come-from-release-please.md) | Releases come from release-please |
 
 ## Format
 Status, Decision, Forbidden, Revisit when (one line), Cost if wrong.
