@@ -9,7 +9,7 @@ on:
   workflow_dispatch: # dry run: builds, makes the SBOM and scans, but publishes nothing
 
 permissions:
-  contents: write # required to create the release and upload assets
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -41,14 +41,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
+      # No build cache here: what this job builds is what gets shipped, and a cache can carry
+      # objects from a run that is not a tagged one.
       # rust-toolchain.toml pins the channel and components, so no version here.
       - name: Install Rust target
         run: rustup target add ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: ${{ matrix.target }}
 
       # cargo-auditable embeds the dependency list in the binary, so it can be scanned for known
       # vulnerabilities after the fact (a stripped binary does not say what is inside it).
@@ -91,8 +91,12 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # creates the release and uploads the assets
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
